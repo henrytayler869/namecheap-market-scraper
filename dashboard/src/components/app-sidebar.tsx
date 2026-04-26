@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, Globe, LayoutDashboard } from "lucide-react";
+import { TrendingUp, Globe, LayoutDashboard, Workflow } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -22,6 +22,11 @@ const trendDomainItems = [
     title: "Marketplace",
     href: "/trend-domain",
     icon: Globe,
+  },
+  {
+    title: "Pipeline",
+    href: "/trend-domain/pipeline",
+    icon: Workflow,
   },
 ];
 
