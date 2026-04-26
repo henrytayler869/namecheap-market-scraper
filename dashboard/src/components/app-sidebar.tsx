@@ -2,13 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, Globe, LayoutDashboard, Workflow } from "lucide-react";
+import { TrendingUp, LayoutDashboard } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
-  SidebarGroup,
-  SidebarGroupLabel,
-  SidebarGroupContent,
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
@@ -17,11 +14,11 @@ import {
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-const trendDomainItems = [
+const navItems = [
   {
-    title: "Pipeline",
+    title: "Trend Domain",
     href: "/trend-domain/pipeline",
-    icon: Workflow,
+    icon: TrendingUp,
   },
 ];
 
@@ -44,32 +41,24 @@ export function AppSidebar() {
       </SidebarHeader>
 
       {/* Content */}
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel className="flex items-center gap-1.5">
-            <TrendingUp className="h-3.5 w-3.5" />
-            Trend Domain
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {trendDomainItems.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    isActive={pathname === item.href}
-                    className={cn(
-                      "transition-colors",
-                      pathname === item.href && "font-medium"
-                    )}
-                    render={<Link href={item.href} />}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+      <SidebarContent className="p-2">
+        <SidebarMenu>
+          {navItems.map((item) => (
+            <SidebarMenuItem key={item.href}>
+              <SidebarMenuButton
+                isActive={pathname.startsWith(item.href)}
+                className={cn(
+                  "transition-colors",
+                  pathname.startsWith(item.href) && "font-medium"
+                )}
+                render={<Link href={item.href} />}
+              >
+                <item.icon className="h-4 w-4" />
+                <span>{item.title}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
       </SidebarContent>
 
       {/* Footer */}
