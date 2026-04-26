@@ -17,49 +17,41 @@ import {
 } from "@/components/ui/table";
 import type { Domain } from "@/app/api/domains/route";
 
-const ALL_TLDS = [
-  "de.com",
-  "uk.net",
-  "gb.net",
-  "us.com",
-  "eu.com",
-  "mex.com",
-  "ru.com",
-  "co.com",
-  "us.org",
-];
+const DEFAULT_TLDS = `de.com
+uk.net
+gb.net
+us.com
+eu.com
+mex.com
+ru.com
+co.com
+us.org`;
+
+function parseTlds(raw: string): string[] {
+  return raw
+    .split(/[\n,;\s]+/)
+    .map((t) => t.trim().toLowerCase().replace(/^\./, ""))
+    .filter(Boolean);
+}
 
 export default function TrendDomainPage() {
   const [priceMin, setPriceMin] = useState(0);
   const [priceMax, setPriceMax] = useState(200);
-  const [selectedTlds, setSelectedTlds] = useState<Set<string>>(
-    new Set(ALL_TLDS)
-  );
+  const [tldsText, setTldsText] = useState(DEFAULT_TLDS);
   const [domains, setDomains] = useState<Domain[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
 
-  const toggleTld = (tld: string) => {
-    setSelectedTlds((prev) => {
-      const next = new Set(prev);
-      if (next.has(tld)) {
-        next.delete(tld);
-      } else {
-        next.add(tld);
-      }
-      return next;
-    });
-  };
-
   const fetchDomains = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const tlds = parseTlds(tldsText);
     try {
       const params = new URLSearchParams({
         priceMin: String(priceMin),
         priceMax: String(priceMax),
-        tlds: Array.from(selectedTlds).join(","),
+        tlds: tlds.join(","),
       });
       const res = await fetch(`/api/domains?${params}`);
       const data = await res.json();
@@ -71,7 +63,7 @@ export default function TrendDomainPage() {
     } finally {
       setLoading(false);
     }
-  }, [priceMin, priceMax, selectedTlds]);
+  }, [priceMin, priceMax, tldsText]);
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -134,48 +126,28 @@ export default function TrendDomainPage() {
           </div>
         </div>
 
-        {/* TLD toggles */}
+        {/* TLD textarea */}
         <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium">TLDs</label>
-            <div className="flex gap-2 text-xs">
-              <button
-                className="text-primary underline-offset-4 hover:underline"
-                onClick={() => setSelectedTlds(new Set(ALL_TLDS))}
-              >
-                Select all
-              </button>
-              <span className="text-muted-foreground">·</span>
-              <button
-                className="text-primary underline-offset-4 hover:underline"
-                onClick={() => setSelectedTlds(new Set())}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {ALL_TLDS.map((tld) => (
-              <button
-                key={tld}
-                onClick={() => toggleTld(tld)}
-                className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
-                  selectedTlds.has(tld)
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                }`}
-              >
-                .{tld}
-              </button>
-            ))}
-          </div>
+          <label className="block text-sm font-medium mb-2">
+            TLDs{" "}
+            <span className="text-muted-foreground font-normal">
+              (one per line, or comma-separated)
+            </span>
+          </label>
+          <textarea
+            value={tldsText}
+            onChange={(e) => setTldsText(e.target.value)}
+            rows={5}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-y"
+            placeholder={"de.com\nuk.net\nus.com\n..."}
+          />
         </div>
 
         {/* Search button */}
         <div className="mt-5 flex justify-end">
           <Button
             onClick={fetchDomains}
-            disabled={loading || selectedTlds.size === 0}
+            disabled={loading || parseTlds(tldsText).length === 0}
             className="gap-2"
           >
             {loading ? (
