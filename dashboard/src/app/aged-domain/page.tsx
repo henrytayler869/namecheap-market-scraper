@@ -177,10 +177,24 @@ export default function AgedDomainPage() {
       `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${minDr}, sắp xếp theo domain_rating desc, limit ${limitPerDomain}.\n` +
       `2. Tổng hợp kết quả: domain | số qualified refs | max DR.\n` +
       `3. Lưu toàn bộ qualified referring domains (domain + DR) vào Backlink DB qua POST /api/aged-domain/db/add.`;
-    navigator.clipboard.writeText(prompt).then(() => {
+    // Try modern clipboard API, fall back to execCommand for non-HTTPS / restricted contexts
+    const doCopy = async () => {
+      try {
+        await navigator.clipboard.writeText(prompt);
+      } catch {
+        const el = document.createElement("textarea");
+        el.value = prompt;
+        el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+        document.body.appendChild(el);
+        el.focus();
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    };
+    doCopy();
   }, [domainsText, minDr, limitPerDomain]);
 
   const handleAnalyze = analyzeV1;
