@@ -15,6 +15,7 @@ import {
   DollarSign,
   TrendingUp,
   Loader2,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,9 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold">("all");
+  const [datePreset, setDatePreset] = useState<"all" | "7d" | "30d" | "month" | "year" | "custom">("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("purchasedAt");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [editingDomain, setEditingDomain] = useState<string | null>(null);
@@ -94,28 +98,76 @@ export default function InventoryPage() {
   const profitOf = (e: InventoryEntry) =>
     e.sellPrice != null && e.purchasePrice != null ? e.sellPrice - e.purchasePrice : null;
 
+  // ─── Date range ─────────────────────────────────────────────────────────────
+  const dateRange = useMemo<{ from: Date | null; to: Date | null }>(() => {
+    if (datePreset === "all") return { from: null, to: null };
+    const now = new Date();
+    const to = new Date(now);
+    to.setHours(23, 59, 59, 999);
+    if (datePreset === "custom") {
+      const from = customFrom ? new Date(customFrom + "T00:00:00") : null;
+      const toCustom = customTo ? new Date(customTo + "T23:59:59") : null;
+      return { from, to: toCustom };
+    }
+    const from = new Date(now);
+    from.setHours(0, 0, 0, 0);
+    if (datePreset === "7d") from.setDate(from.getDate() - 7);
+    else if (datePreset === "30d") from.setDate(from.getDate() - 30);
+    else if (datePreset === "month") from.setDate(1);
+    else if (datePreset === "year") { from.setMonth(0); from.setDate(1); }
+    return { from, to };
+  }, [datePreset, customFrom, customTo]);
+
+  const inRange = useCallback((iso: string | null | undefined): boolean => {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    if (dateRange.from && t < dateRange.from.getTime()) return false;
+    if (dateRange.to && t > dateRange.to.getTime()) return false;
+    return true;
+  }, [dateRange]);
+
+  // Within range = entry was purchased in range OR sold in range
+  const dateFiltered = useMemo(() => {
+    if (datePreset === "all") return entries;
+    return entries.filter((e) => inRange(e.purchasedAt) || inRange(e.soldAt));
+  }, [entries, datePreset, inRange]);
+
   const stats = useMemo(() => {
+    // Matched profit accounting (no sales yet → 0 profit, not -100% ROI):
+    //   - Chi phí: sum purchase_price for ALL entries in scope (capital deployed)
+    //   - Doanh thu: sum sell_price for SOLD entries in scope
+    //   - Lợi nhuận: sum (sell - buy) for SOLD entries in scope (realized profit)
+    //   - ROI: Lợi nhuận / cost-basis-of-sold (so unsold holdings don't dilute)
     let totalSpend = 0;
     let totalRevenue = 0;
     let totalProfit = 0;
+    let soldCostBasis = 0;
     let soldCount = 0;
     let holdingCount = 0;
+
+    const inScope = (e: InventoryEntry) =>
+      datePreset === "all" || inRange(e.purchasedAt) || inRange(e.soldAt);
+
     for (const e of entries) {
+      if (!inScope(e)) continue;
       totalSpend += e.purchasePrice ?? 0;
       if (e.sellPrice != null) {
-        totalRevenue += e.sellPrice;
         soldCount++;
+        totalRevenue += e.sellPrice;
         const p = profitOf(e);
-        if (p != null) totalProfit += p;
+        if (p != null) {
+          totalProfit += p;
+          soldCostBasis += e.purchasePrice ?? 0;
+        }
       } else {
         holdingCount++;
       }
     }
-    return { totalSpend, totalRevenue, totalProfit, soldCount, holdingCount };
-  }, [entries]);
+    return { totalSpend, totalRevenue, totalProfit, soldCount, holdingCount, soldCostBasis };
+  }, [entries, datePreset, inRange]);
 
   const filtered = useMemo(() => {
-    const list = entries.filter((e) => {
+    const list = dateFiltered.filter((e) => {
       if (search && !e.domain.includes(search.toLowerCase())) return false;
       if (filterStatus === "holding" && e.sellPrice != null) return false;
       if (filterStatus === "sold" && e.sellPrice == null) return false;
@@ -146,7 +198,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [entries, search, filterStatus, sortKey, sortDir]);
+  }, [dateFiltered, search, filterStatus, sortKey, sortDir]);
 
   const toggleSelect = (domain: string) => {
     setSelected((prev) => {
@@ -380,11 +432,52 @@ export default function InventoryPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Kho Domain</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Danh sách domain đã mua. Click giá để chỉnh sửa.
-        </p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Kho Domain</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Danh sách domain đã mua. Click giá để chỉnh sửa.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Calendar className="h-4 w-4 text-muted-foreground" />
+          <select
+            value={datePreset}
+            onChange={(e) => setDatePreset(e.target.value as typeof datePreset)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+          >
+            <option value="all">Tất cả thời gian</option>
+            <option value="7d">7 ngày qua</option>
+            <option value="30d">30 ngày qua</option>
+            <option value="month">Tháng này</option>
+            <option value="year">Năm nay</option>
+            <option value="custom">Tùy chỉnh...</option>
+          </select>
+          {datePreset === "custom" && (
+            <>
+              <Input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-8 w-36 text-xs"
+                placeholder="Từ"
+              />
+              <span className="text-xs text-muted-foreground">→</span>
+              <Input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-8 w-36 text-xs"
+                placeholder="Đến"
+              />
+            </>
+          )}
+          {datePreset !== "all" && dateRange.from && dateRange.to && (
+            <span className="text-[11px] text-muted-foreground italic">
+              {dateRange.from.toLocaleDateString()} → {dateRange.to.toLocaleDateString()}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Stats */}
@@ -423,11 +516,11 @@ export default function InventoryPage() {
           <p className="text-xs text-muted-foreground uppercase">ROI</p>
           <p className={cn(
             "text-2xl font-bold",
-            stats.totalSpend > 0 && stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
+            stats.soldCostBasis > 0 && stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
               : stats.totalProfit < 0 ? "text-rose-600 dark:text-rose-400"
               : "text-muted-foreground"
           )}>
-            {stats.totalSpend > 0 ? `${((stats.totalProfit / stats.totalSpend) * 100).toFixed(1)}%` : "—"}
+            {stats.soldCostBasis > 0 ? `${((stats.totalProfit / stats.soldCostBasis) * 100).toFixed(1)}%` : "—"}
           </p>
         </div>
       </div>
