@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { upsertEntries, DbEntry } from "@/lib/backlink-db";
+import { addEntries } from "@/lib/ref-blacklist-db";
 
-// POST body: { entries: { domain: string, dr: number }[] }
+// POST body: { domains: string[], note?: string }
 export async function POST(request: NextRequest) {
   try {
-    const { entries: toAdd }: { entries: DbEntry[] } = await request.json();
-    if (!Array.isArray(toAdd) || toAdd.length === 0) {
+    const { domains, note }: { domains: string[]; note?: string } = await request.json();
+    if (!Array.isArray(domains) || domains.length === 0) {
       return NextResponse.json(
-        { error: "entries phải là mảng không rỗng" },
+        { error: "domains phải là mảng không rỗng" },
         { status: 400 }
       );
     }
-
-    const result = await upsertEntries(toAdd);
+    const result = await addEntries(domains, note);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     return NextResponse.json(

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Archive, Settings } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Archive, Filter, Boxes, Settings } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +24,16 @@ const navItems = [
     title: "Aged Domain",
     href: "/aged-domain",
     icon: Archive,
+  },
+  {
+    title: "Domain Picker",
+    href: "/domain-picker",
+    icon: Filter,
+  },
+  {
+    title: "Kho Domain",
+    href: "/inventory",
+    icon: Boxes,
   },
   {
     title: "Cài đặt",

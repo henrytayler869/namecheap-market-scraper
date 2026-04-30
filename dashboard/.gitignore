@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local data (dev fallback for picker-db, etc.)
+/.data/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

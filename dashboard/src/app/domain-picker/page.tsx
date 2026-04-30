@@ -1,0 +1,1758 @@
+"use client";
+
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import {
+  Upload,
+  Search,
+  ChevronDown,
+  ArrowUpDown,
+  ExternalLink,
+  Loader2,
+  Database,
+  Trash2,
+  X,
+  AlertCircle,
+  FileSpreadsheet,
+  Save,
+  Filter as FilterIcon,
+  Copy,
+  Check,
+  Download,
+  Plus,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import {
+  parseCsv,
+  mapRows,
+  applyScores,
+  passesThresholds,
+  parseAhrefsCsv,
+  parseUnifiedCsv,
+  REF_BLACKLIST,
+  DEFAULT_THRESHOLDS,
+  DEFAULT_WEIGHTS,
+  type PickerRow,
+  type PickerThresholds,
+  type PickerWeights,
+} from "@/lib/picker-csv";
+import type { PickerEntry } from "@/lib/picker-db";
+import type { TargetSummary } from "@/lib/ahrefs-db";
+import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type SortKey = "score" | "domain" | "source" | "tf" | "cf" | "rd" | "da" | "age" | "szScore" | "szDrops" | "semTraffic";
+
+interface ToastItem {
+  id: number;
+  message: string;
+  isError: boolean;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function DomainPickerPage() {
+  // ── File / parsed rows ──────────────────────────────────────────────────────
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [rawRows, setRawRows] = useState<PickerRow[]>([]);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [parsing, setParsing] = useState(false);
+
+  // ── Config ──────────────────────────────────────────────────────────────────
+  // Applied = currently driving filter/score. Draft = bound to inputs.
+  const [thresholds, setThresholds] = useState<PickerThresholds>(DEFAULT_THRESHOLDS);
+  const [weights, setWeights] = useState<PickerWeights>(DEFAULT_WEIGHTS);
+  const [topN, setTopN] = useState<number>(50);
+  const [draftThresholds, setDraftThresholds] = useState<PickerThresholds>(DEFAULT_THRESHOLDS);
+  const [draftWeights, setDraftWeights] = useState<PickerWeights>(DEFAULT_WEIGHTS);
+  const [draftTopN, setDraftTopN] = useState<number>(50);
+  const [configOpen, setConfigOpen] = useState(false);
+
+  const isDirty =
+    JSON.stringify(draftThresholds) !== JSON.stringify(thresholds) ||
+    JSON.stringify(draftWeights) !== JSON.stringify(weights) ||
+    draftTopN !== topN;
+
+  const applyConfig = () => {
+    setThresholds(draftThresholds);
+    setWeights(draftWeights);
+    setTopN(draftTopN);
+  };
+
+  const resetConfig = () => {
+    setDraftThresholds(DEFAULT_THRESHOLDS);
+    setDraftWeights(DEFAULT_WEIGHTS);
+    setDraftTopN(50);
+    setThresholds(DEFAULT_THRESHOLDS);
+    setWeights(DEFAULT_WEIGHTS);
+    setTopN(50);
+  };
+
+  // ── Sort ────────────────────────────────────────────────────────────────────
+  const [sortKey, setSortKey] = useState<SortKey>("score");
+  const [sortDir, setSortDir] = useState<1 | -1>(-1);
+
+  // ── DB ──────────────────────────────────────────────────────────────────────
+  const [dbEntries, setDbEntries] = useState<PickerEntry[]>([]);
+  const [dbOpen, setDbOpen] = useState(false);
+  const [dbSearch, setDbSearch] = useState("");
+  const [savingDb, setSavingDb] = useState(false);
+
+  // ── Ahrefs Result DB ────────────────────────────────────────────────────────
+  const [ahrefsSummary, setAhrefsSummary] = useState<TargetSummary[]>([]);
+  const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
+  const [ahrefsOpen, setAhrefsOpen] = useState(false);
+  const [ahrefsSearch, setAhrefsSearch] = useState("");
+  const [ahrefsUploading, setAhrefsUploading] = useState(false);
+  const [excludeChecked, setExcludeChecked] = useState(true);
+  const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
+  const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
+  const [refBlacklistOpen, setRefBlacklistOpen] = useState(false);
+  const [ahrefsSortKey, setAhrefsSortKey] = useState<"targetDomain" | "source" | "rating" | "category" | "checkedAt" | "refsCount">("refsCount");
+  const [ahrefsSortDir, setAhrefsSortDir] = useState<1 | -1>(-1);
+  const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
+  const [filterRating, setFilterRating] = useState<string>("all");
+  const [filterSource, setFilterSource] = useState<string>("all");
+  const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
+  const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
+  const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
+  const [purchaseBulkPrice, setPurchaseBulkPrice] = useState("");
+  const [savingPurchase, setSavingPurchase] = useState(false);
+  const [inventory, setInventory] = useState<{ domain: string; purchasePrice: number | null }[]>([]);
+  const [userBlacklist, setUserBlacklist] = useState<RefBlacklistEntry[]>([]);
+  const [bulkAddText, setBulkAddText] = useState("");
+  const [addingBulk, setAddingBulk] = useState(false);
+  const [bulkAddOpen, setBulkAddOpen] = useState(false);
+
+  // ── Export helpers ──────────────────────────────────────────────────────────
+  const [copiedDomains, setCopiedDomains] = useState(false);
+
+  // ── Toasts ──────────────────────────────────────────────────────────────────
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastIdRef = useRef(0);
+
+  const showToast = useCallback((message: string, isError = false) => {
+    const id = ++toastIdRef.current;
+    setToasts((p) => [...p, { id, message, isError }]);
+    setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
+  }, []);
+
+  // ─── Score recompute when weights change ─────────────────────────────────────
+  const scoredRows = useMemo(() => applyScores(rawRows, weights), [rawRows, weights]);
+
+  const thresholdQualified = useMemo(
+    () => scoredRows.filter((r) => passesThresholds(r, thresholds)),
+    [scoredRows, thresholds]
+  );
+
+  const qualifiedRows = useMemo(() => {
+    if (!excludeChecked || checkedTargets.size === 0) return thresholdQualified;
+    return thresholdQualified.filter((r) => !checkedTargets.has(r.domain));
+  }, [thresholdQualified, excludeChecked, checkedTargets]);
+
+  const excludedCount = thresholdQualified.length - qualifiedRows.length;
+
+  const displayedRows = useMemo(() => {
+    const sorted = [...qualifiedRows].sort((a, b) => {
+      const av = a[sortKey] as number | string;
+      const bv = b[sortKey] as number | string;
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
+      return String(av).localeCompare(String(bv)) * sortDir;
+    });
+    return topN > 0 ? sorted.slice(0, topN) : sorted;
+  }, [qualifiedRows, sortKey, sortDir, topN]);
+
+  // ─── DB ─────────────────────────────────────────────────────────────────────
+
+  const loadDb = useCallback(async () => {
+    try {
+      const res = await fetch("/api/domain-picker/db");
+      const data = await res.json();
+      setDbEntries(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadAhrefs = useCallback(async () => {
+    try {
+      const [sumRes, chkRes] = await Promise.all([
+        fetch("/api/ahrefs-results/db"),
+        fetch("/api/ahrefs-results/db/checked"),
+      ]);
+      const sumData = await sumRes.json();
+      const chkData = await chkRes.json();
+      setAhrefsSummary(Array.isArray(sumData) ? sumData : []);
+      setCheckedTargets(new Set((chkData?.targets ?? []) as string[]));
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadUserBlacklist = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ref-blacklist");
+      const data = await res.json();
+      setUserBlacklist(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadInventory = useCallback(async () => {
+    try {
+      const res = await fetch("/api/inventory");
+      const data = await res.json();
+      setInventory(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const purchasedSet = useMemo(
+    () => new Set(inventory.map((e) => e.domain)),
+    [inventory]
+  );
+
+  useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory]);
+
+  const saveAllToDb = useCallback(async () => {
+    if (!scoredRows.length) return;
+    setSavingDb(true);
+    try {
+      const entries: Omit<PickerEntry, "addedAt">[] = scoredRows.map((r) => ({
+        domain: r.domain,
+        source: r.source,
+        tf: r.tf,
+        cf: r.cf,
+        bl: r.bl,
+        rd: r.rd,
+        da: r.da,
+        pa: r.pa,
+        age: r.age,
+        szScore: r.szScore,
+        szDrops: r.szDrops,
+        semTraffic: r.semTraffic,
+        semKeywords: r.semKeywords,
+        price: r.price,
+        expires: r.expires,
+        score: r.score,
+      }));
+      const res = await fetch("/api/domain-picker/db/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lưu thất bại");
+      await loadDb();
+      showToast(`✅ Đã lưu: ${data.added} mới, ${data.updated} cập nhật (tổng ${data.total} entries)`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setSavingDb(false);
+    }
+  }, [scoredRows, loadDb, showToast]);
+
+  const removeFromDb = useCallback(async (domain: string) => {
+    await fetch(`/api/domain-picker/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
+    await loadDb();
+  }, [loadDb]);
+
+  const clearDb = useCallback(async () => {
+    if (!dbEntries.length) return;
+    if (!confirm(`Xóa toàn bộ ${dbEntries.length} entries khỏi Picker DB?`)) return;
+    await fetch("/api/domain-picker/db", { method: "DELETE" });
+    await loadDb();
+    showToast("🗑️ Đã xóa toàn bộ Picker DB");
+  }, [dbEntries.length, loadDb, showToast]);
+
+  // ─── Ahrefs Result DB handlers ──────────────────────────────────────────────
+
+  const uploadAhrefsCsv = useCallback(async (file: File) => {
+    setAhrefsUploading(true);
+    try {
+      const text = await file.text();
+
+      // Try unified format first (6 columns), fall back to legacy 3-column ahrefs format
+      let unifiedRows: ReturnType<typeof parseUnifiedCsv> = [];
+      let legacyRows: ReturnType<typeof parseAhrefsCsv> = [];
+      let unifiedErr: string | null = null;
+      try {
+        unifiedRows = parseUnifiedCsv(text);
+      } catch (e) {
+        unifiedErr = e instanceof Error ? e.message : "parse error";
+      }
+      if (!unifiedRows.length) {
+        try {
+          legacyRows = parseAhrefsCsv(text);
+        } catch {
+          // Both parsers failed
+          throw new Error(unifiedErr ?? "CSV không đúng format");
+        }
+      }
+
+      // Build payload from unified rows
+      let refsRows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+      let assessments: { targetDomain: string; rating: string | null; category: string | null; detail: string | null }[] = [];
+
+      if (unifiedRows.length) {
+        for (const u of unifiedRows) {
+          for (const r of u.refs) {
+            refsRows.push({ targetDomain: u.targetDomain, refDomain: r.domain, domainRating: r.dr });
+          }
+          if (u.rating || u.category || u.detail) {
+            assessments.push({
+              targetDomain: u.targetDomain,
+              rating: u.rating || null,
+              category: u.category || null,
+              detail: u.detail || null,
+            });
+          }
+        }
+      } else {
+        // legacy format
+        refsRows = legacyRows.map((r) => ({
+          targetDomain: r.targetDomain,
+          refDomain: r.refDomain,
+          domainRating: r.domainRating,
+        }));
+      }
+
+      if (!refsRows.length && !assessments.length) {
+        throw new Error("CSV không có dòng dữ liệu hợp lệ");
+      }
+
+      const res = await fetch("/api/ahrefs-results/db/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: refsRows, assessments }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Upload thất bại");
+      await loadAhrefs();
+      const refStat = data.refs;
+      const assessStat = data.assessments;
+      const parts: string[] = [];
+      if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref rows`);
+      if (assessStat?.total) parts.push(`${assessStat.total} assessment`);
+      showToast(`✅ Upload OK · ${parts.join(" · ") || "no data"}`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setAhrefsUploading(false);
+    }
+  }, [loadAhrefs, showToast]);
+
+  const removeAhrefsTarget = useCallback(async (domain: string) => {
+    await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
+    await loadAhrefs();
+  }, [loadAhrefs]);
+
+  const effectiveBlacklist = useMemo(
+    () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
+    [userBlacklist]
+  );
+
+  // Source map: target_domain → source (from picker_domains)
+  const sourceMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of dbEntries) if (e.source) m.set(e.domain, e.source);
+    return m;
+  }, [dbEntries]);
+
+  // Severity rank for rating sort (high = worse)
+  const RATING_RANK: Record<string, number> = {
+    "❌ RẤT XẤU": 5, "❌ XẤU": 4, "⚠️ RỦI RO": 3, "⚠️ TRUNG BÌNH": 2, "✅ TỐT": 1,
+  };
+
+  const filteredAhrefs = useMemo(() => {
+    const bySearch = ahrefsSummary.filter((t) => {
+      if (ahrefsSearch && !t.targetDomain.includes(ahrefsSearch.toLowerCase())) return false;
+      if (filterRating !== "all") {
+        if (filterRating === "none") {
+          if (t.rating) return false;
+        } else if (t.rating !== filterRating) return false;
+      }
+      if (filterSource !== "all") {
+        const src = sourceMap.get(t.targetDomain) ?? "";
+        if (filterSource === "none") {
+          if (src) return false;
+        } else if (src !== filterSource) return false;
+      }
+      if (filterPurchased !== "all") {
+        const isPurchased = purchasedSet.has(t.targetDomain);
+        if (filterPurchased === "yes" && !isPurchased) return false;
+        if (filterPurchased === "no" && isPurchased) return false;
+      }
+      return true;
+    });
+    const enriched = bySearch.map((t) => {
+      const cleanRefs = applyRefBlacklist
+        ? t.refs.filter((r) => !effectiveBlacklist.has(r.domain))
+        : t.refs;
+      return {
+        ...t,
+        refs: cleanRefs,
+        refsCount: applyRefBlacklist ? cleanRefs.length : t.refsCount,
+        maxDr: applyRefBlacklist ? (cleanRefs.length ? cleanRefs[0].dr : 0) : t.maxDr,
+        source: sourceMap.get(t.targetDomain) ?? "",
+      };
+    });
+    const visible = enriched.filter((t) => t.refsCount > 0);
+
+    return [...visible].sort((a, b) => {
+      let av: number | string;
+      let bv: number | string;
+      if (ahrefsSortKey === "rating") {
+        av = a.rating ? (RATING_RANK[a.rating] ?? 0) : 0;
+        bv = b.rating ? (RATING_RANK[b.rating] ?? 0) : 0;
+      } else if (ahrefsSortKey === "checkedAt") {
+        av = new Date(a.checkedAt).getTime();
+        bv = new Date(b.checkedAt).getTime();
+      } else {
+        av = (a[ahrefsSortKey] ?? "") as string | number;
+        bv = (b[ahrefsSortKey] ?? "") as string | number;
+      }
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * ahrefsSortDir;
+      return String(av).localeCompare(String(bv)) * ahrefsSortDir;
+    });
+  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet]);
+
+  const handleAhrefsSort = (key: typeof ahrefsSortKey) => {
+    if (ahrefsSortKey === key) setAhrefsSortDir((d) => (d === 1 ? -1 : 1));
+    else { setAhrefsSortKey(key); setAhrefsSortDir(-1); }
+  };
+
+  const toggleTargetSelection = useCallback((domain: string) => {
+    setSelectedTargets((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelectedTargets((prev) => {
+      const visibleDomains = filteredAhrefs.slice(0, 200).map((t) => t.targetDomain);
+      const allSelected = visibleDomains.length > 0 && visibleDomains.every((d) => prev.has(d));
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const d of visibleDomains) next.delete(d);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const d of visibleDomains) next.add(d);
+      return next;
+    });
+  }, [filteredAhrefs]);
+
+  const clearSelection = useCallback(() => setSelectedTargets(new Set()), []);
+
+  const availableSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of dbEntries) if (e.source) set.add(e.source);
+    return Array.from(set).sort();
+  }, [dbEntries]);
+
+  // Open purchase form: prefill rows from selectedTargets
+  const openPurchaseForm = useCallback(() => {
+    if (selectedTargets.size === 0) return;
+    const init: Record<string, string> = {};
+    for (const d of selectedTargets) {
+      const inv = inventory.find((e) => e.domain === d);
+      init[d] = inv?.purchasePrice != null ? String(inv.purchasePrice) : "";
+    }
+    setPurchaseRows(init);
+    setPurchaseBulkPrice("");
+    setPurchaseFormOpen(true);
+  }, [selectedTargets, inventory]);
+
+  const applyBulkPrice = useCallback(() => {
+    const v = purchaseBulkPrice.trim();
+    if (!v) return;
+    const next: Record<string, string> = { ...purchaseRows };
+    for (const d of Object.keys(next)) next[d] = v;
+    setPurchaseRows(next);
+  }, [purchaseBulkPrice, purchaseRows]);
+
+  const savePurchases = useCallback(async () => {
+    setSavingPurchase(true);
+    try {
+      const entries: { domain: string; purchasePrice: number | null; source: string | null; rating: string | null; category: string | null }[] = [];
+      for (const [domain, priceStr] of Object.entries(purchaseRows)) {
+        const t = ahrefsSummary.find((x) => x.targetDomain === domain);
+        const price = priceStr.trim() === "" ? null : Number(priceStr);
+        entries.push({
+          domain,
+          purchasePrice: isNaN(price as number) ? null : price,
+          source: sourceMap.get(domain) ?? null,
+          rating: t?.rating ?? null,
+          category: t?.category ?? null,
+        });
+      }
+      const res = await fetch("/api/inventory/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      await loadInventory();
+      setPurchaseFormOpen(false);
+      setSelectedTargets(new Set());
+      showToast(`✅ Đã lưu ${entries.length} domain vào kho · tổng ${data.total}`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setSavingPurchase(false);
+    }
+  }, [purchaseRows, ahrefsSummary, sourceMap, loadInventory, showToast]);
+
+  // Effective list for copy/export: selection if any, else all filtered
+  const exportableAhrefs = useMemo(() => {
+    if (selectedTargets.size === 0) return filteredAhrefs;
+    return filteredAhrefs.filter((t) => selectedTargets.has(t.targetDomain));
+  }, [filteredAhrefs, selectedTargets]);
+
+  const blacklistedRefCount = useMemo(() => {
+    if (!applyRefBlacklist) return 0;
+    let n = 0;
+    for (const t of ahrefsSummary) {
+      for (const r of t.refs) if (effectiveBlacklist.has(r.domain)) n++;
+    }
+    return n;
+  }, [ahrefsSummary, applyRefBlacklist, effectiveBlacklist]);
+
+  const addBulkBlacklist = useCallback(async () => {
+    const domains = bulkAddText
+      .split(/[\s,;\n]+/)
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean);
+    if (!domains.length) return;
+    setAddingBulk(true);
+    try {
+      const res = await fetch("/api/ref-blacklist/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      await loadUserBlacklist();
+      setBulkAddText("");
+      setBulkAddOpen(false);
+      showToast(`✅ Đã thêm ${data.added} domain mới · tổng ${data.total} entries`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setAddingBulk(false);
+    }
+  }, [bulkAddText, loadUserBlacklist, showToast]);
+
+  const removeUserBlacklist = useCallback(async (domain: string) => {
+    await fetch(`/api/ref-blacklist/${encodeURIComponent(domain)}`, { method: "DELETE" });
+    await loadUserBlacklist();
+  }, [loadUserBlacklist]);
+
+  const resetBlacklistDefaults = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ref-blacklist/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains: REF_BLACKLIST, note: "default" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      await loadUserBlacklist();
+      showToast(`✅ Restore defaults: +${data.added} mới · tổng ${data.total} entries`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [loadUserBlacklist, showToast]);
+
+  const copyAhrefsTargets = useCallback(async () => {
+    if (!exportableAhrefs.length) return;
+    const text = exportableAhrefs.map((t) => t.targetDomain).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el);
+      el.focus(); el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    setCopiedAhrefsTargets(true);
+    setTimeout(() => setCopiedAhrefsTargets(false), 2000);
+    showToast(`✅ Đã copy ${exportableAhrefs.length} target domain`);
+  }, [exportableAhrefs, showToast]);
+
+  const downloadAhrefsCsv = useCallback(() => {
+    if (!exportableAhrefs.length) return;
+    const headers = ["target_domain", "checked_at", "refs", "rating", "category", "detail"];
+    const escape = (v: unknown) => {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const rows: string[] = [];
+    for (const t of exportableAhrefs) {
+      const refsCell = t.refs.map((r) => `${r.domain} (DR ${r.dr})`).join("; ");
+      rows.push([
+        t.targetDomain,
+        t.checkedAt,
+        refsCell,
+        t.rating ?? "",
+        t.category ?? "",
+        t.detail ?? "",
+      ].map(escape).join(","));
+    }
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.download = `ahrefs-results-${ts}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`✅ Export ${rows.length} target → ${a.download}`);
+  }, [exportableAhrefs, showToast]);
+
+  const clearAhrefs = useCallback(async () => {
+    if (!ahrefsSummary.length) return;
+    if (!confirm(`Xóa toàn bộ ${ahrefsSummary.length} target khỏi Ahrefs Result DB?`)) return;
+    await fetch("/api/ahrefs-results/db", { method: "DELETE" });
+    await loadAhrefs();
+    showToast("🗑️ Đã xóa toàn bộ Ahrefs Result DB");
+  }, [ahrefsSummary.length, loadAhrefs, showToast]);
+
+  // ─── File upload ────────────────────────────────────────────────────────────
+
+  const handleFile = useCallback(async (file: File) => {
+    setParseError(null);
+    setParsing(true);
+    setFileName(file.name);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      const mapped = mapRows(rows);
+      if (!mapped.length) throw new Error("Không có dòng dữ liệu hợp lệ");
+      setRawRows(mapped);
+      showToast(`✅ Parse: ${mapped.length.toLocaleString()} domain từ ${file.name}`);
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : "Lỗi parse CSV");
+      setRawRows([]);
+    } finally {
+      setParsing(false);
+    }
+  }, [showToast]);
+
+  // ─── Copy domains / Export CSV ───────────────────────────────────────────────
+
+  const copyDomains = useCallback(async () => {
+    if (!displayedRows.length) return;
+    const text = displayedRows.map((r) => r.domain).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el);
+      el.focus(); el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    setCopiedDomains(true);
+    setTimeout(() => setCopiedDomains(false), 2000);
+    showToast(`✅ Đã copy ${displayedRows.length} domain`);
+  }, [displayedRows, showToast]);
+
+  const exportCsv = useCallback(() => {
+    if (!displayedRows.length) return;
+    const headers = [
+      "domain", "source", "score",
+      "tf", "cf", "bl", "rd", "da", "pa",
+      "age", "sz_score", "sz_drops",
+      "sem_traffic", "sem_keywords",
+      "price", "expires",
+    ];
+    const escape = (v: unknown) => {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const rows = displayedRows.map((r) => [
+      r.domain, r.source, r.score.toFixed(2),
+      r.tf, r.cf, r.bl, r.rd, r.da, r.pa,
+      r.age, r.szScore, r.szDrops,
+      r.semTraffic, r.semKeywords,
+      r.price, r.expires,
+    ].map(escape).join(","));
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.download = `domain-picks-${ts}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`✅ Export ${displayedRows.length} domain → ${a.download}`);
+  }, [displayedRows, showToast]);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
+    else { setSortKey(key); setSortDir(-1); }
+  };
+
+  const filteredDb = useMemo(
+    () => [...dbEntries]
+      .filter((e) => !dbSearch || e.domain.includes(dbSearch.toLowerCase()))
+      .sort((a, b) => b.score - a.score),
+    [dbEntries, dbSearch]
+  );
+
+  // ─── Render ─────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="flex flex-col gap-6 p-6">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Domain Picker — CSV Filter</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Upload CSV (SpamZilla / ExpiredDomains export) → lọc domain tốt nhất theo threshold + score → lưu vào Picker DB.
+        </p>
+      </div>
+
+      {/* ── Upload card ───────────────────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="h-5 w-5 text-primary" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide">CSV Upload</h2>
+          </div>
+
+          <label className="cursor-pointer">
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFile(f);
+                e.target.value = ""; // allow re-upload same file
+              }}
+            />
+            <span className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium shadow-sm hover:bg-primary/90">
+              {parsing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {parsing ? "Đang parse..." : "Chọn file CSV"}
+            </span>
+          </label>
+        </div>
+
+        {parseError && (
+          <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive mb-4">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {parseError}
+          </div>
+        )}
+
+        {fileName && !parseError && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <Stat label="File" value={fileName} mono />
+            <Stat label="Tổng dòng" value={rawRows.length.toLocaleString()} />
+            <Stat label="Qualified (threshold)" value={qualifiedRows.length.toLocaleString()} accent />
+            <Stat label="Hiển thị Top" value={displayedRows.length.toLocaleString()} />
+          </div>
+        )}
+
+        {rawRows.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={saveAllToDb}
+              disabled={savingDb}
+              className="gap-2"
+            >
+              {savingDb ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Lưu toàn bộ {rawRows.length.toLocaleString()} domain vào DB
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setConfigOpen((o) => !o)}
+              className="gap-2"
+            >
+              <FilterIcon className="h-4 w-4" />
+              Threshold & Weights
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", configOpen && "rotate-180")} />
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Threshold + Weights config ─────────────────────────────────────── */}
+      {rawRows.length > 0 && configOpen && (
+        <div className="rounded-xl border bg-card p-5 shadow-sm space-y-5">
+          <div>
+            <h3 className="text-sm font-semibold mb-3">Thresholds (lọc qualified)</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <NumField label="TF ≥" value={draftThresholds.tfMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, tfMin: v })} />
+              <NumField label="CF ≥" value={draftThresholds.cfMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, cfMin: v })} />
+              <NumField label="Maj. RD ≥" value={draftThresholds.rdMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, rdMin: v })} />
+              <NumField label="Moz DA ≥" value={draftThresholds.daMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, daMin: v })} />
+              <NumField label="Age ≥ (năm)" value={draftThresholds.ageMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, ageMin: v })} />
+              <NumField label="SZ Score ≥" value={draftThresholds.szScoreMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, szScoreMin: v })} />
+              <NumField label="SZ Drops ≤" value={draftThresholds.szDropsMax} onChange={(v) => setDraftThresholds({ ...draftThresholds, szDropsMax: v })} />
+              <NumField label="Top N (0=all)" value={draftTopN} onChange={setDraftTopN} />
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold mb-3">Score weights</h3>
+            <p className="text-xs text-muted-foreground mb-3 font-mono">
+              score = TF×{draftWeights.tf} + CF×{draftWeights.cf} + log10(RD+1)×{draftWeights.rd} + DA×{draftWeights.da} + Age×{draftWeights.age} + SZ_Score×{draftWeights.szScore} − SZ_Drops×{draftWeights.szDrops}
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <NumField label="w(TF)" value={draftWeights.tf} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, tf: v })} />
+              <NumField label="w(CF)" value={draftWeights.cf} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, cf: v })} />
+              <NumField label="w(log RD)" value={draftWeights.rd} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, rd: v })} />
+              <NumField label="w(DA)" value={draftWeights.da} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, da: v })} />
+              <NumField label="w(Age)" value={draftWeights.age} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, age: v })} />
+              <NumField label="w(SZ Score)" value={draftWeights.szScore} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, szScore: v })} />
+              <NumField label="w(SZ Drops penalty)" value={draftWeights.szDrops} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, szDrops: v })} />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={applyConfig}
+              disabled={!isDirty}
+              className="gap-2"
+            >
+              <FilterIcon className="h-3.5 w-3.5" />
+              Apply
+              {isDirty && <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />}
+            </Button>
+            <Button size="sm" variant="outline" onClick={resetConfig}>
+              Reset defaults
+            </Button>
+            {isDirty && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Có thay đổi chưa apply
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Results table ───────────────────────────────────────────────────── */}
+      {rawRows.length > 0 && (
+        <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <FilterIcon className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">
+                Top picks: {displayedRows.length.toLocaleString()} / {qualifiedRows.length.toLocaleString()} qualified
+              </span>
+              {excludeChecked && excludedCount > 0 && (
+                <Badge
+                  variant="secondary"
+                  className="text-xs bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                >
+                  ⊘ Excluded {excludedCount.toLocaleString()} đã check Ahrefs
+                </Badge>
+              )}
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={excludeChecked}
+                  onChange={(e) => setExcludeChecked(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-muted-foreground">Loại domain đã check Ahrefs</span>
+              </label>
+              <Badge variant="secondary" className="text-xs">
+                Click cột để sort
+              </Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={copyDomains}
+                disabled={!displayedRows.length}
+                className="gap-1.5"
+              >
+                {copiedDomains
+                  ? <Check className="h-3.5 w-3.5 text-green-500" />
+                  : <Copy className="h-3.5 w-3.5" />}
+                {copiedDomains ? "Đã copy!" : `Copy ${displayedRows.length} domain`}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={exportCsv}
+                disabled={!displayedRows.length}
+                className="gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export CSV
+              </Button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 border-b sticky top-0">
+                <tr>
+                  <Th label="#" />
+                  <SortTh label="Domain" col="domain" current={sortKey} dir={sortDir} onSort={() => handleSort("domain")} />
+                  <SortTh label="Score" col="score" current={sortKey} dir={sortDir} onSort={() => handleSort("score")} />
+                  <SortTh label="Source" col="source" current={sortKey} dir={sortDir} onSort={() => handleSort("source")} />
+                  <SortTh label="TF" col="tf" current={sortKey} dir={sortDir} onSort={() => handleSort("tf")} />
+                  <SortTh label="CF" col="cf" current={sortKey} dir={sortDir} onSort={() => handleSort("cf")} />
+                  <SortTh label="RD" col="rd" current={sortKey} dir={sortDir} onSort={() => handleSort("rd")} />
+                  <SortTh label="DA" col="da" current={sortKey} dir={sortDir} onSort={() => handleSort("da")} />
+                  <SortTh label="Age" col="age" current={sortKey} dir={sortDir} onSort={() => handleSort("age")} />
+                  <SortTh label="SZ Score" col="szScore" current={sortKey} dir={sortDir} onSort={() => handleSort("szScore")} />
+                  <SortTh label="SZ Drops" col="szDrops" current={sortKey} dir={sortDir} onSort={() => handleSort("szDrops")} />
+                  <SortTh label="SEM Traffic" col="semTraffic" current={sortKey} dir={sortDir} onSort={() => handleSort("semTraffic")} />
+                  <Th label="" />
+                </tr>
+              </thead>
+              <tbody>
+                {displayedRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={13} className="text-center py-12 text-muted-foreground text-sm">
+                      Không có domain nào đạt threshold — nới lỏng điều kiện ở mục Threshold & Weights
+                    </td>
+                  </tr>
+                ) : (
+                  displayedRows.map((r, idx) => (
+                    <tr key={r.domain} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{idx + 1}</td>
+                      <td className="px-3 py-2 font-mono font-medium">{r.domain}</td>
+                      <td className="px-3 py-2"><ScoreBadge value={r.score} /></td>
+                      <td className="px-3 py-2"><SourceBadge source={r.source} /></td>
+                      <td className="px-3 py-2"><Metric value={r.tf} good={30} mid={15} /></td>
+                      <td className="px-3 py-2"><Metric value={r.cf} good={20} mid={10} /></td>
+                      <td className="px-3 py-2"><Metric value={r.rd} good={100} mid={30} /></td>
+                      <td className="px-3 py-2"><Metric value={r.da} good={30} mid={15} /></td>
+                      <td className="px-3 py-2 text-muted-foreground">{r.age}</td>
+                      <td className="px-3 py-2"><Metric value={r.szScore} good={25} mid={20} /></td>
+                      <td className="px-3 py-2"><Metric value={r.szDrops} good={0} mid={3} reverse /></td>
+                      <td className="px-3 py-2 text-muted-foreground">{r.semTraffic.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right">
+                        <a
+                          href={`https://${r.domain}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-primary inline-flex"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Ahrefs Result DB Panel ──────────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <button
+          onClick={() => setAhrefsOpen((o) => !o)}
+          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition rounded-xl"
+        >
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-orange-500" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Ahrefs Result DB</h2>
+            <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 text-xs font-bold px-2 py-0.5 rounded-full">
+              {ahrefsSummary.length.toLocaleString()} target
+            </span>
+            {ahrefsSummary.length > 0 && (
+              <span className="bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
+                {ahrefsSummary.reduce((a, t) => a + t.refsCount, 0).toLocaleString()} ref rows
+              </span>
+            )}
+          </div>
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", ahrefsOpen && "rotate-180")} />
+        </button>
+
+        {ahrefsOpen && (
+          <div className="border-t px-6 pb-6">
+            <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
+              Lưu kết quả check Ahrefs (target_domain, ref_domain, DR). Khi filter ở Domain Picker,
+              các target đã có trong DB này sẽ được <strong>loại bỏ</strong> để tránh check lại.
+              Format CSV cần đủ 3 cột: <code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,ref_domain,domain_rating</code>.
+            </p>
+
+            {/* ── Ref Domain Blacklist controls ─────────────────────────── */}
+            <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 mb-4 text-xs">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={applyRefBlacklist}
+                    onChange={(e) => setApplyRefBlacklist(e.target.checked)}
+                    className="rounded"
+                  />
+                  <span>
+                    <strong>Ref Domain Blacklist</strong>{" "}
+                    <span className="text-muted-foreground">
+                      ({effectiveBlacklist.size} domain)
+                    </span>
+                  </span>
+                </label>
+                <div className="flex items-center gap-2">
+                  {applyRefBlacklist && blacklistedRefCount > 0 && (
+                    <span className="bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded">
+                      ⊘ {blacklistedRefCount.toLocaleString()} ref bị lọc
+                    </span>
+                  )}
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-6 px-2 gap-1 text-[11px]"
+                    onClick={() => setBulkAddOpen((o) => !o)}
+                  >
+                    <Plus className="h-3 w-3" />
+                    Thêm
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-6 px-2 gap-1 text-[11px]"
+                    onClick={resetBlacklistDefaults}
+                    title={`Add ${REF_BLACKLIST.length} default domains (idempotent)`}
+                  >
+                    Reset defaults
+                  </Button>
+                  <button
+                    onClick={() => setRefBlacklistOpen((o) => !o)}
+                    className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                  >
+                    {refBlacklistOpen ? "Ẩn" : "Xem"} list
+                    <ChevronDown className={cn("h-3 w-3 transition-transform", refBlacklistOpen && "rotate-180")} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Bulk-add textarea */}
+              {bulkAddOpen && (
+                <div className="mt-3 pt-3 border-t border-border/50 space-y-2">
+                  <p className="text-muted-foreground">
+                    Paste danh sách (mỗi dòng / phẩy / khoảng trắng đều được). Sẽ chuẩn hóa lowercase + bỏ http(s)://.
+                  </p>
+                  <textarea
+                    value={bulkAddText}
+                    onChange={(e) => setBulkAddText(e.target.value)}
+                    rows={4}
+                    placeholder={"google.com\nwixsite.com, hatena.ne.jp\nheylink.me typepad.com"}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={addBulkBlacklist}
+                      disabled={addingBulk || !bulkAddText.trim()}
+                      className="h-7 gap-1.5 text-xs"
+                    >
+                      {addingBulk ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                      {addingBulk ? "Đang thêm..." : "Thêm vào blacklist"}
+                    </Button>
+                    <Button
+                      size="sm" variant="ghost"
+                      className="h-7 text-xs"
+                      onClick={() => { setBulkAddOpen(false); setBulkAddText(""); }}
+                    >
+                      Hủy
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Domain list — flat, sorted alphabetically, all deletable */}
+              {refBlacklistOpen && (
+                <div className="mt-2 pt-2 border-t border-border/50">
+                  {effectiveBlacklist.size === 0 ? (
+                    <p className="text-muted-foreground text-center py-2">
+                      Blacklist rỗng — click <strong>Reset defaults</strong> để khôi phục {REF_BLACKLIST.length} domain mặc định
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from(effectiveBlacklist)
+                        .sort()
+                        .map((d) => (
+                          <span
+                            key={d}
+                            className="group inline-flex items-center rounded border border-border bg-background pl-1.5 pr-1 py-0.5 text-[11px] font-mono text-muted-foreground"
+                          >
+                            {d}
+                            <button
+                              onClick={() => removeUserBlacklist(d)}
+                              className="ml-1 opacity-50 group-hover:opacity-100 hover:text-destructive"
+                              title="Xóa khỏi blacklist"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </span>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-end gap-2 mb-4">
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadAhrefsCsv(f);
+                    e.target.value = "";
+                  }}
+                />
+                <span className={cn(
+                  "inline-flex items-center gap-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 text-sm font-medium shadow-sm",
+                  ahrefsUploading && "opacity-60 pointer-events-none"
+                )}>
+                  {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  {ahrefsUploading ? "Đang upload..." : "Upload Ahrefs CSV"}
+                </span>
+              </label>
+              <Button
+                size="sm" variant="outline"
+                className="gap-1.5"
+                onClick={copyAhrefsTargets}
+                disabled={!exportableAhrefs.length}
+              >
+                {copiedAhrefsTargets
+                  ? <Check className="h-3.5 w-3.5 text-green-500" />
+                  : <Copy className="h-3.5 w-3.5" />}
+                {copiedAhrefsTargets ? "Đã copy!" : `Copy ${exportableAhrefs.length} domain`}
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                className="gap-1.5"
+                onClick={downloadAhrefsCsv}
+                disabled={!exportableAhrefs.length}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export CSV {selectedTargets.size > 0 && `(${selectedTargets.size})`}
+              </Button>
+              {selectedTargets.size > 0 && (
+                <>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={openPurchaseForm}
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    Đã mua ({selectedTargets.size})
+                  </Button>
+                  <Button
+                    size="sm" variant="ghost"
+                    className="gap-1.5 text-xs"
+                    onClick={clearSelection}
+                    title="Bỏ chọn tất cả"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Clear ({selectedTargets.size})
+                  </Button>
+                </>
+              )}
+              <Button
+                size="sm" variant="outline"
+                className="gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/10 ml-auto"
+                onClick={clearAhrefs}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Xóa tất cả
+              </Button>
+            </div>
+
+            {ahrefsSummary.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    placeholder="Tìm target domain..."
+                    value={ahrefsSearch}
+                    onChange={(e) => setAhrefsSearch(e.target.value)}
+                    className="pl-8 text-sm h-8"
+                  />
+                </div>
+                <select
+                  value={filterRating}
+                  onChange={(e) => setFilterRating(e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Filter Đánh giá"
+                >
+                  <option value="all">Tất cả đánh giá</option>
+                  <option value="✅ TỐT">✅ TỐT</option>
+                  <option value="⚠️ TRUNG BÌNH">⚠️ TRUNG BÌNH</option>
+                  <option value="⚠️ RỦI RO">⚠️ RỦI RO</option>
+                  <option value="❌ XẤU">❌ XẤU</option>
+                  <option value="❌ RẤT XẤU">❌ RẤT XẤU</option>
+                  <option value="none">(chưa đánh giá)</option>
+                </select>
+                <select
+                  value={filterSource}
+                  onChange={(e) => setFilterSource(e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Filter Source"
+                >
+                  <option value="all">Tất cả source</option>
+                  {availableSources.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                  <option value="none">(không có source)</option>
+                </select>
+                <select
+                  value={filterPurchased}
+                  onChange={(e) => setFilterPurchased(e.target.value as "all" | "yes" | "no")}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Filter Đã mua"
+                >
+                  <option value="all">Tất cả</option>
+                  <option value="yes">Đã mua</option>
+                  <option value="no">Chưa mua</option>
+                </select>
+                {(filterRating !== "all" || filterSource !== "all" || filterPurchased !== "all") && (
+                  <Button
+                    size="sm" variant="ghost"
+                    className="h-8 text-xs"
+                    onClick={() => { setFilterRating("all"); setFilterSource("all"); setFilterPurchased("all"); }}
+                  >
+                    <X className="h-3 w-3" />
+                    Reset filter
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* Purchase form (inline) */}
+            {purchaseFormOpen && (
+              <div className="mb-4 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/30 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Check className="h-4 w-4 text-emerald-600" />
+                    <h3 className="text-sm font-semibold">Đánh dấu đã mua — {Object.keys(purchaseRows).length} domain</h3>
+                  </div>
+                  <button onClick={() => setPurchaseFormOpen(false)} className="text-muted-foreground hover:text-foreground">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 mb-3 pb-3 border-b border-emerald-200 dark:border-emerald-800">
+                  <span className="text-xs text-muted-foreground">Áp giá đồng loạt:</span>
+                  <Input
+                    type="number"
+                    placeholder="vd: 10.99"
+                    value={purchaseBulkPrice}
+                    onChange={(e) => setPurchaseBulkPrice(e.target.value)}
+                    className="h-7 w-32 text-xs"
+                    step="0.01"
+                  />
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={applyBulkPrice}>
+                    Apply all
+                  </Button>
+                </div>
+
+                <div className="max-h-64 overflow-y-auto space-y-1 mb-3">
+                  {Object.keys(purchaseRows).map((domain) => (
+                    <div key={domain} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono flex-1 truncate">{domain}</span>
+                      <span className="text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        placeholder="0.00"
+                        value={purchaseRows[domain]}
+                        onChange={(e) => setPurchaseRows({ ...purchaseRows, [domain]: e.target.value })}
+                        className="h-6 w-24 text-xs"
+                        step="0.01"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={savePurchases}
+                    disabled={savingPurchase}
+                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                  >
+                    {savingPurchase ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    {savingPurchase ? "Đang lưu..." : "Lưu vào kho"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setPurchaseFormOpen(false)}>
+                    Hủy
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {ahrefsSummary.length === 0 ? (
+              <p className="text-center py-8 text-sm text-muted-foreground">
+                DB trống — upload CSV kết quả Ahrefs để bắt đầu loại trừ
+              </p>
+            ) : (
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 border-b">
+                    <tr>
+                      <th className="px-3 py-2 w-8">
+                        <input
+                          type="checkbox"
+                          className="rounded cursor-pointer"
+                          aria-label="Select all visible"
+                          checked={
+                            filteredAhrefs.length > 0 &&
+                            filteredAhrefs.slice(0, 200).every((t) => selectedTargets.has(t.targetDomain))
+                          }
+                          ref={(el) => {
+                            if (!el) return;
+                            const visible = filteredAhrefs.slice(0, 200);
+                            const selectedCount = visible.filter((t) => selectedTargets.has(t.targetDomain)).length;
+                            el.indeterminate = selectedCount > 0 && selectedCount < visible.length;
+                          }}
+                          onChange={toggleSelectAllVisible}
+                        />
+                      </th>
+                      <SortTh label="Target Domain" col="targetDomain" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("targetDomain")} />
+                      <SortTh label="Source" col="source" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("source")} />
+                      <SortTh label="Đánh giá" col="rating" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("rating")} />
+                      <SortTh label="Phân loại" col="category" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("category")} />
+                      <SortTh label="Checked" col="checkedAt" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("checkedAt")} />
+                      <SortTh label="Refs" col="refsCount" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("refsCount")} />
+                      <th className="w-12" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAhrefs
+                      .slice(0, 200)
+                      .map((t) => (
+                        <tr key={t.targetDomain} className={cn(
+                          "border-b border-border/30 hover:bg-muted/30 group align-top",
+                          selectedTargets.has(t.targetDomain) && "bg-blue-50/50 dark:bg-blue-950/30"
+                        )}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              className="rounded cursor-pointer"
+                              aria-label={`Select ${t.targetDomain}`}
+                              checked={selectedTargets.has(t.targetDomain)}
+                              onChange={() => toggleTargetSelection(t.targetDomain)}
+                            />
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            <div className="flex items-center gap-1.5">
+                              <span>{t.targetDomain}</span>
+                              {purchasedSet.has(t.targetDomain) && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] px-1 py-0.5 font-sans font-medium"
+                                  title="Đã có trong kho"
+                                >
+                                  <Check className="h-2.5 w-2.5" /> Đã mua
+                                </span>
+                              )}
+                            </div>
+                            {t.detail && (
+                              <details className="mt-1">
+                                <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground select-none">
+                                  Chi tiết
+                                </summary>
+                                <p className="mt-1 text-[11px] font-sans font-normal text-muted-foreground leading-snug max-w-[400px] whitespace-pre-wrap">
+                                  {t.detail}
+                                </p>
+                              </details>
+                            )}
+                          </td>
+                          <td className="px-3 py-2"><SourceBadge source={t.source} /></td>
+                          <td className="px-3 py-2"><RatingBadge rating={t.rating} /></td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px]">
+                            {t.category || <span className="opacity-40">—</span>}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                            {new Date(t.checkedAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-3 py-2">
+                            <RefList refs={t.refs} />
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              onClick={() => removeAhrefsTarget(t.targetDomain)}
+                              className="opacity-0 group-hover:opacity-100 transition text-destructive hover:opacity-80"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+                {filteredAhrefs.length > 200 && (
+                  <p className="text-center text-xs text-muted-foreground py-2">
+                    Hiển thị 200/{filteredAhrefs.length.toLocaleString()} target
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Picker DB Panel ─────────────────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <button
+          onClick={() => setDbOpen((o) => !o)}
+          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition rounded-xl"
+        >
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-primary" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Picker DB</h2>
+            <span className="bg-primary/10 text-primary text-xs font-bold px-2 py-0.5 rounded-full">
+              {dbEntries.length.toLocaleString()} entries
+            </span>
+          </div>
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", dbOpen && "rotate-180")} />
+        </button>
+
+        {dbOpen && (
+          <div className="border-t px-6 pb-6">
+            <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
+              Lưu trữ tất cả domain đã được upload (Apify Key-Value Store).
+              Mỗi entry gồm: TF/CF/RD/DA/Age/SZ Score/SZ Drops/SEM Traffic/Score/timestamp.
+            </p>
+
+            <div className="flex flex-wrap items-end gap-2 mb-4">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/10 ml-auto"
+                onClick={clearDb}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Xóa tất cả
+              </Button>
+            </div>
+
+            {dbEntries.length > 0 && (
+              <div className="relative mb-3">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Tìm domain trong DB..."
+                  value={dbSearch}
+                  onChange={(e) => setDbSearch(e.target.value)}
+                  className="pl-8 text-sm h-8"
+                />
+              </div>
+            )}
+
+            {dbEntries.length === 0 ? (
+              <p className="text-center py-8 text-sm text-muted-foreground">
+                DB trống — upload CSV và nhấn <strong>Lưu toàn bộ</strong> để bắt đầu
+              </p>
+            ) : (
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 border-b">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Domain</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Score</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">TF/CF</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">RD</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">DA</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Age</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">SZ</th>
+                      <th className="w-12" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDb.slice(0, 200).map((e) => (
+                      <tr key={e.domain} className="border-b border-border/30 hover:bg-muted/30 group">
+                        <td className="px-3 py-2 font-mono text-xs">{e.domain}</td>
+                        <td className="px-3 py-2"><ScoreBadge value={e.score} small /></td>
+                        <td className="px-3 py-2 text-xs">{e.tf}/{e.cf}</td>
+                        <td className="px-3 py-2 text-xs">{e.rd}</td>
+                        <td className="px-3 py-2 text-xs">{e.da}</td>
+                        <td className="px-3 py-2 text-xs">{e.age}</td>
+                        <td className="px-3 py-2 text-xs">{e.szScore}/<span className="text-destructive">{e.szDrops}</span></td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={() => removeFromDb(e.domain)}
+                            className="opacity-0 group-hover:opacity-100 transition text-destructive hover:opacity-80"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {filteredDb.length > 200 && (
+                  <p className="text-center text-xs text-muted-foreground py-2">
+                    Hiển thị 200/{filteredDb.length.toLocaleString()} entries
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Toasts ─────────────────────────────────────────────────────────── */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={cn(
+              "px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white pointer-events-auto",
+              t.isError ? "bg-destructive" : "bg-gray-800 dark:bg-gray-700"
+            )}
+          >
+            {t.message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function Stat({ label, value, mono, accent }: { label: string; value: string; mono?: boolean; accent?: boolean }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={cn(
+        "text-sm font-semibold truncate",
+        mono && "font-mono text-xs",
+        accent && "text-primary"
+      )} title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function NumField({ label, value, onChange, step = 1 }: {
+  label: string; value: number; onChange: (v: number) => void; step?: number;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-muted-foreground mb-1">{label}</label>
+      <Input
+        type="number"
+        value={value}
+        step={step}
+        onChange={(e) => onChange(Number(e.target.value) || 0)}
+        className="h-8 text-sm"
+      />
+    </div>
+  );
+}
+
+function Th({ label }: { label: string }) {
+  return (
+    <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+      {label}
+    </th>
+  );
+}
+
+function SortTh({ label, col, current, dir, onSort }: {
+  label: string; col: string; current: string; dir: 1 | -1; onSort: () => void;
+}) {
+  const active = current === col;
+  return (
+    <th
+      onClick={onSort}
+      className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide cursor-pointer select-none hover:bg-muted/50 whitespace-nowrap"
+    >
+      <span className="flex items-center gap-1">
+        {label}
+        <ArrowUpDown className={cn("h-3 w-3", active ? "text-primary" : "opacity-30")} />
+        {active && <span className="text-primary">{dir === -1 ? "↓" : "↑"}</span>}
+      </span>
+    </th>
+  );
+}
+
+function ScoreBadge({ value, small = false }: { value: number; small?: boolean }) {
+  const v = Math.round(value);
+  const color =
+    v >= 100 ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+    : v >= 60 ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+    : v >= 30 ? "bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
+    : "bg-muted text-muted-foreground";
+  return (
+    <span className={cn(
+      "inline-flex items-center font-bold rounded-full",
+      small ? "text-xs px-1.5 py-0.5" : "text-sm px-2 py-0.5",
+      color
+    )}>
+      {v}
+    </span>
+  );
+}
+
+function SourceBadge({ source }: { source: string }) {
+  if (!source) return <span className="text-xs text-muted-foreground">—</span>;
+  const s = source.toLowerCase();
+  const color =
+    s.includes("pending delete")
+      ? "bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
+    : s.includes("expired")
+      ? "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300"
+    : "bg-muted text-muted-foreground";
+  return (
+    <span
+      className={cn("inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap", color)}
+      title={source}
+    >
+      {source}
+    </span>
+  );
+}
+
+function RefList({ refs }: { refs: { domain: string; dr: number }[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const COLLAPSED = 6;
+  const visible = expanded ? refs : refs.slice(0, COLLAPSED);
+  const hidden = refs.length - visible.length;
+
+  const copyAllRefs = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!refs.length) return;
+    const text = refs.map((r) => r.domain).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el);
+      el.focus(); el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (!refs.length) return <span className="text-xs text-muted-foreground">—</span>;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 max-w-[520px]">
+      <button
+        onClick={copyAllRefs}
+        className={cn(
+          "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+          copied
+            ? "border-green-300 bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-300"
+            : "border-primary/40 bg-primary/5 hover:bg-primary/10 text-primary"
+        )}
+        title={`Copy ${refs.length} ref domain`}
+      >
+        {copied
+          ? <><Check className="h-3 w-3" />Đã copy {refs.length}</>
+          : <><Copy className="h-3 w-3" />Copy {refs.length}</>
+        }
+      </button>
+      {visible.map((r) => (
+        <a
+          key={r.domain}
+          href={`https://${r.domain}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 hover:bg-muted/60 px-1.5 py-0.5 text-[11px] font-mono text-foreground/90 hover:text-primary transition-colors"
+        >
+          {r.domain}
+          <span className={cn(
+            "rounded px-1 text-[10px] font-bold",
+            r.dr >= 90 ? "text-emerald-600 dark:text-emerald-400"
+            : r.dr >= 70 ? "text-blue-600 dark:text-blue-400"
+            : r.dr >= 40 ? "text-yellow-600 dark:text-yellow-400"
+            : "text-muted-foreground"
+          )}>
+            DR {r.dr}
+          </span>
+        </a>
+      ))}
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="text-[11px] text-primary hover:underline px-1"
+        >
+          + {hidden} more
+        </button>
+      )}
+      {expanded && refs.length > COLLAPSED && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="text-[11px] text-muted-foreground hover:underline px-1"
+        >
+          collapse
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RatingBadge({ rating }: { rating: string | null }) {
+  if (!rating?.trim()) return <span className="text-xs text-muted-foreground opacity-40">—</span>;
+  const r = rating.toUpperCase();
+  const color =
+    r.includes("RẤT XẤU") ? "bg-red-200 dark:bg-red-950 text-red-900 dark:text-red-300 border-red-400"
+    : r.includes("XẤU") ? "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-300"
+    : r.includes("RỦI RO") ? "bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 border-orange-300"
+    : r.includes("TRUNG BÌNH") ? "bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-300"
+    : r.includes("TỐT") ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-300"
+    : "bg-muted text-muted-foreground border-border";
+  return (
+    <span className={cn(
+      "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+      color
+    )} title={rating}>
+      {rating}
+    </span>
+  );
+}
+
+function DrBadge({ dr }: { dr: number }) {
+  const color =
+    dr >= 90 ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+    : dr >= 70 ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+    : dr >= 40 ? "bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
+    : "bg-muted text-muted-foreground";
+  return (
+    <span className={cn(
+      "inline-flex items-center font-bold rounded-full text-xs px-1.5 py-0.5",
+      color
+    )}>
+      {dr}
+    </span>
+  );
+}
+
+function Metric({ value, good, mid, reverse = false }: {
+  value: number; good: number; mid: number; reverse?: boolean;
+}) {
+  const isGood = reverse ? value <= good : value >= good;
+  const isMid = reverse ? value <= mid : value >= mid;
+  const color =
+    isGood ? "text-emerald-600 dark:text-emerald-400 font-semibold"
+    : isMid ? "text-blue-600 dark:text-blue-400"
+    : "text-muted-foreground";
+  return <span className={color}>{value}</span>;
+}

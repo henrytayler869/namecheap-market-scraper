@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteEntry } from "@/lib/backlink-db";
+import { deleteEntry } from "@/lib/ref-blacklist-db";
 
-// DELETE /api/aged-domain/db/:domain
+// DELETE /api/ref-blacklist/:domain
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ domain: string }> }

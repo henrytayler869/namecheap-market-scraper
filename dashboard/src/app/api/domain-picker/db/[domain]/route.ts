@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteEntry } from "@/lib/backlink-db";
+import { deleteEntry } from "@/lib/picker-db";
 
-// DELETE /api/aged-domain/db/:domain
+// DELETE /api/domain-picker/db/:domain
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ domain: string }> }

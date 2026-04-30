@@ -1,0 +1,971 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Boxes,
+  Search,
+  Trash2,
+  X,
+  ArrowUpDown,
+  Check,
+  ExternalLink,
+  Edit2,
+  Save as SaveIcon,
+  Download,
+  DollarSign,
+  TrendingUp,
+  Loader2,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import type { InventoryEntry } from "@/lib/inventory-db";
+import type { TargetSummary } from "@/lib/ahrefs-db";
+import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
+
+type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "category" | "purchasedAt" | "soldAt" | "status";
+
+interface ToastItem { id: number; message: string; isError: boolean }
+
+export default function InventoryPage() {
+  const [entries, setEntries] = useState<InventoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold">("all");
+  const [sortKey, setSortKey] = useState<SortKey>("purchasedAt");
+  const [sortDir, setSortDir] = useState<1 | -1>(-1);
+  const [editingDomain, setEditingDomain] = useState<string | null>(null);
+  const [editPrice, setEditPrice] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editingExpected, setEditingExpected] = useState<string | null>(null);
+  const [editExpectedValue, setEditExpectedValue] = useState("");
+
+  // Refs data (from Ahrefs Result DB) + blacklist
+  const [ahrefsSummary, setAhrefsSummary] = useState<TargetSummary[]>([]);
+  const [userBlacklist, setUserBlacklist] = useState<RefBlacklistEntry[]>([]);
+
+  const blacklistSet = useMemo(
+    () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
+    [userBlacklist]
+  );
+
+  const refsByDomain = useMemo(() => {
+    const m = new Map<string, { domain: string; dr: number }[]>();
+    for (const t of ahrefsSummary) {
+      const filtered = t.refs.filter((r) => !blacklistSet.has(r.domain));
+      m.set(t.targetDomain, filtered);
+    }
+    return m;
+  }, [ahrefsSummary, blacklistSet]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sellFormOpen, setSellFormOpen] = useState(false);
+  const [sellRows, setSellRows] = useState<Record<string, string>>({});
+  const [sellBulkPrice, setSellBulkPrice] = useState("");
+  const [savingSell, setSavingSell] = useState(false);
+
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastIdRef = useRef(0);
+  const showToast = useCallback((message: string, isError = false) => {
+    const id = ++toastIdRef.current;
+    setToasts((p) => [...p, { id, message, isError }]);
+    setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [invRes, ahrefsRes, blRes] = await Promise.all([
+        fetch("/api/inventory"),
+        fetch("/api/ahrefs-results/db"),
+        fetch("/api/ref-blacklist"),
+      ]);
+      const invData = await invRes.json();
+      const ahrefsData = await ahrefsRes.json();
+      const blData = await blRes.json();
+      setEntries(Array.isArray(invData) ? invData : []);
+      setAhrefsSummary(Array.isArray(ahrefsData) ? ahrefsData : []);
+      setUserBlacklist(Array.isArray(blData) ? blData : []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const profitOf = (e: InventoryEntry) =>
+    e.sellPrice != null && e.purchasePrice != null ? e.sellPrice - e.purchasePrice : null;
+
+  const stats = useMemo(() => {
+    let totalSpend = 0;
+    let totalRevenue = 0;
+    let totalProfit = 0;
+    let soldCount = 0;
+    let holdingCount = 0;
+    for (const e of entries) {
+      totalSpend += e.purchasePrice ?? 0;
+      if (e.sellPrice != null) {
+        totalRevenue += e.sellPrice;
+        soldCount++;
+        const p = profitOf(e);
+        if (p != null) totalProfit += p;
+      } else {
+        holdingCount++;
+      }
+    }
+    return { totalSpend, totalRevenue, totalProfit, soldCount, holdingCount };
+  }, [entries]);
+
+  const filtered = useMemo(() => {
+    const list = entries.filter((e) => {
+      if (search && !e.domain.includes(search.toLowerCase())) return false;
+      if (filterStatus === "holding" && e.sellPrice != null) return false;
+      if (filterStatus === "sold" && e.sellPrice == null) return false;
+      return true;
+    });
+    return [...list].sort((a, b) => {
+      let av: number | string;
+      let bv: number | string;
+      if (sortKey === "purchasePrice") {
+        av = a.purchasePrice ?? -1; bv = b.purchasePrice ?? -1;
+      } else if (sortKey === "sellPrice") {
+        av = a.sellPrice ?? -Infinity; bv = b.sellPrice ?? -Infinity;
+      } else if (sortKey === "expectedSellPrice") {
+        av = a.expectedSellPrice ?? -Infinity; bv = b.expectedSellPrice ?? -Infinity;
+      } else if (sortKey === "profit") {
+        av = profitOf(a) ?? -Infinity; bv = profitOf(b) ?? -Infinity;
+      } else if (sortKey === "purchasedAt") {
+        av = new Date(a.purchasedAt).getTime(); bv = new Date(b.purchasedAt).getTime();
+      } else if (sortKey === "soldAt") {
+        av = a.soldAt ? new Date(a.soldAt).getTime() : -Infinity;
+        bv = b.soldAt ? new Date(b.soldAt).getTime() : -Infinity;
+      } else if (sortKey === "status") {
+        av = a.sellPrice != null ? 1 : 0; bv = b.sellPrice != null ? 1 : 0;
+      } else {
+        av = (a[sortKey as keyof InventoryEntry] ?? "") as string;
+        bv = (b[sortKey as keyof InventoryEntry] ?? "") as string;
+      }
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
+      return String(av).localeCompare(String(bv)) * sortDir;
+    });
+  }, [entries, search, filterStatus, sortKey, sortDir]);
+
+  const toggleSelect = (domain: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const visible = filtered.map((e) => e.domain);
+      const allSelected = visible.length > 0 && visible.every((d) => prev.has(d));
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const d of visible) next.delete(d);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const d of visible) next.add(d);
+      return next;
+    });
+  };
+
+  const openSellForm = useCallback(() => {
+    if (selected.size === 0) return;
+    const init: Record<string, string> = {};
+    for (const d of selected) {
+      const e = entries.find((x) => x.domain === d);
+      // Pre-fill: existing sell price > expected price > empty
+      const v = e?.sellPrice != null ? String(e.sellPrice)
+        : e?.expectedSellPrice != null ? String(e.expectedSellPrice)
+        : "";
+      init[d] = v;
+    }
+    setSellRows(init);
+    setSellBulkPrice("");
+    setSellFormOpen(true);
+  }, [selected, entries]);
+
+  // Apply expected price to all in sell form
+  const applyExpectedToSellForm = useCallback(() => {
+    const next: Record<string, string> = { ...sellRows };
+    for (const domain of Object.keys(next)) {
+      const e = entries.find((x) => x.domain === domain);
+      if (e?.expectedSellPrice != null) next[domain] = String(e.expectedSellPrice);
+    }
+    setSellRows(next);
+  }, [sellRows, entries]);
+
+  const applyBulkSellPrice = useCallback(() => {
+    const v = sellBulkPrice.trim();
+    if (!v) return;
+    const next: Record<string, string> = { ...sellRows };
+    for (const d of Object.keys(next)) next[d] = v;
+    setSellRows(next);
+  }, [sellBulkPrice, sellRows]);
+
+  const saveSell = useCallback(async () => {
+    setSavingSell(true);
+    try {
+      const rows: { domain: string; sellPrice: number | null }[] = [];
+      for (const [domain, priceStr] of Object.entries(sellRows)) {
+        const v = priceStr.trim();
+        const price = v === "" ? null : Number(v);
+        rows.push({ domain, sellPrice: isNaN(price as number) ? null : price });
+      }
+      const res = await fetch("/api/inventory/sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      setSellFormOpen(false);
+      setSelected(new Set());
+      await load();
+      showToast(`✅ Đã cập nhật giá bán cho ${data.updated} domain`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setSavingSell(false);
+    }
+  }, [sellRows, load, showToast]);
+
+  const handleSort = (k: SortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 1 ? -1 : 1));
+    else { setSortKey(k); setSortDir(-1); }
+  };
+
+  const startEdit = (e: InventoryEntry) => {
+    setEditingDomain(e.domain);
+    setEditPrice(e.purchasePrice != null ? String(e.purchasePrice) : "");
+    setEditNotes(e.notes ?? "");
+  };
+
+  const startEditExpected = (e: InventoryEntry) => {
+    setEditingExpected(e.domain);
+    setEditExpectedValue(e.expectedSellPrice != null ? String(e.expectedSellPrice) : "");
+  };
+
+  const saveExpected = useCallback(async (domain: string) => {
+    const v = editExpectedValue.trim();
+    const priceNum = v === "" ? null : Number(v);
+    try {
+      const res = await fetch(`/api/inventory/${encodeURIComponent(domain)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedSellPrice: isNaN(priceNum as number) ? null : priceNum }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      setEditingExpected(null);
+      await load();
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [editExpectedValue, load, showToast]);
+
+  // Bulk: sell all selected domains @ their expected price (skips those without)
+  const bulkSellAtExpected = useCallback(async () => {
+    if (selected.size === 0) return;
+    const rows: { domain: string; sellPrice: number }[] = [];
+    let skipped = 0;
+    for (const d of selected) {
+      const e = entries.find((x) => x.domain === d);
+      if (e?.expectedSellPrice != null) {
+        rows.push({ domain: d, sellPrice: e.expectedSellPrice });
+      } else {
+        skipped++;
+      }
+    }
+    if (rows.length === 0) {
+      showToast("❌ Không có domain nào có giá dự kiến", true);
+      return;
+    }
+    try {
+      const res = await fetch("/api/inventory/sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      setSelected(new Set());
+      await load();
+      const skipNote = skipped > 0 ? ` · ${skipped} skipped (chưa có giá dự kiến)` : "";
+      showToast(`✅ Bán ${data.updated} domain @ giá dự kiến${skipNote}`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [selected, entries, load, showToast]);
+
+  // Quick sell at expected price for one row
+  const quickSellAtExpected = useCallback(async (e: InventoryEntry) => {
+    if (e.expectedSellPrice == null) {
+      showToast("❌ Domain này chưa có giá dự kiến", true);
+      return;
+    }
+    try {
+      const res = await fetch("/api/inventory/sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: [{ domain: e.domain, sellPrice: e.expectedSellPrice }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      await load();
+      showToast(`✅ Đã bán ${e.domain} @ $${e.expectedSellPrice.toFixed(2)}`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [load, showToast]);
+
+  const saveEdit = useCallback(async (domain: string) => {
+    const priceNum = editPrice.trim() === "" ? null : Number(editPrice);
+    try {
+      const res = await fetch(`/api/inventory/${encodeURIComponent(domain)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          purchasePrice: isNaN(priceNum as number) ? null : priceNum,
+          notes: editNotes,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      setEditingDomain(null);
+      await load();
+      showToast(`✅ Đã cập nhật ${domain}`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [editPrice, editNotes, load, showToast]);
+
+  const removeEntry = useCallback(async (domain: string) => {
+    if (!confirm(`Xóa ${domain} khỏi kho?`)) return;
+    await fetch(`/api/inventory/${encodeURIComponent(domain)}`, { method: "DELETE" });
+    await load();
+    showToast(`🗑️ Đã xóa ${domain}`);
+  }, [load, showToast]);
+
+  const exportCsv = useCallback(() => {
+    if (!filtered.length) return;
+    const headers = ["domain", "ref_domains", "expected_sell_price"];
+    const escape = (v: unknown) => {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const rows = filtered.map((e) => {
+      const refs = refsByDomain.get(e.domain) ?? [];
+      const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join("; ");
+      return [
+        e.domain,
+        refsCell,
+        e.expectedSellPrice ?? "",
+      ].map(escape).join(",");
+    });
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.download = `domain-inventory-${ts}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [filtered]);
+
+  return (
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Kho Domain</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Danh sách domain đã mua. Click giá để chỉnh sửa.
+        </p>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Tổng Domain</p>
+          <p className="text-2xl font-bold">{entries.length.toLocaleString()}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {stats.holdingCount} holding · {stats.soldCount} sold
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Chi phí</p>
+          <p className="text-2xl font-bold text-rose-600 dark:text-rose-400">
+            ${stats.totalSpend.toFixed(2)}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Doanh thu</p>
+          <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+            ${stats.totalRevenue.toFixed(2)}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Lợi nhuận</p>
+          <p className={cn(
+            "text-2xl font-bold",
+            stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
+              : stats.totalProfit < 0 ? "text-rose-600 dark:text-rose-400"
+              : "text-muted-foreground"
+          )}>
+            {stats.totalProfit >= 0 ? "+" : ""}${stats.totalProfit.toFixed(2)}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">ROI</p>
+          <p className={cn(
+            "text-2xl font-bold",
+            stats.totalSpend > 0 && stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
+              : stats.totalProfit < 0 ? "text-rose-600 dark:text-rose-400"
+              : "text-muted-foreground"
+          )}>
+            {stats.totalSpend > 0 ? `${((stats.totalProfit / stats.totalSpend) * 100).toFixed(1)}%` : "—"}
+          </p>
+        </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Tìm domain..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-8 h-8 text-sm"
+          />
+        </div>
+        <select
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value as "all" | "holding" | "sold")}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+        >
+          <option value="all">Tất cả</option>
+          <option value="holding">Đang giữ</option>
+          <option value="sold">Đã bán</option>
+        </select>
+        {selected.size > 0 && (() => {
+          const withExpected = Array.from(selected).filter((d) => {
+            const e = entries.find((x) => x.domain === d);
+            return e?.expectedSellPrice != null;
+          }).length;
+          return (
+            <>
+              <Button
+                size="sm"
+                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                onClick={openSellForm}
+              >
+                <DollarSign className="h-3.5 w-3.5" />
+                Đã bán ({selected.size})
+              </Button>
+              <Button
+                size="sm"
+                className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
+                onClick={bulkSellAtExpected}
+                disabled={withExpected === 0}
+                title={withExpected === 0 ? "Không domain nào có giá dự kiến" : `Bán ${withExpected} domain @ giá dự kiến (skip ${selected.size - withExpected} chưa có)`}
+              >
+                <TrendingUp className="h-3.5 w-3.5" />
+                Bán @ Dự kiến ({withExpected}{selected.size > withExpected ? `/${selected.size}` : ""})
+              </Button>
+              <Button
+                size="sm" variant="ghost" className="gap-1.5 text-xs"
+                onClick={() => setSelected(new Set())}
+              >
+                <X className="h-3.5 w-3.5" /> Clear
+              </Button>
+            </>
+          );
+        })()}
+        <Button
+          size="sm" variant="outline" className="gap-1.5 ml-auto"
+          onClick={exportCsv}
+          disabled={!filtered.length}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Export CSV
+        </Button>
+      </div>
+
+      {/* Sell form */}
+      {sellFormOpen && (
+        <div className="rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/30 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-emerald-600" />
+              <h3 className="text-sm font-semibold">Đánh dấu đã bán — {Object.keys(sellRows).length} domain</h3>
+            </div>
+            <button onClick={() => setSellFormOpen(false)} className="text-muted-foreground hover:text-foreground">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-emerald-200 dark:border-emerald-800 flex-wrap">
+            <span className="text-xs text-muted-foreground">Áp giá đồng loạt:</span>
+            <Input
+              type="number" step="0.01"
+              placeholder="vd: 50.00"
+              value={sellBulkPrice}
+              onChange={(e) => setSellBulkPrice(e.target.value)}
+              className="h-7 w-32 text-xs"
+            />
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={applyBulkSellPrice}>
+              Apply all
+            </Button>
+            <Button
+              size="sm" variant="outline"
+              className="h-7 text-xs gap-1 border-emerald-400 text-emerald-700 dark:text-emerald-300"
+              onClick={applyExpectedToSellForm}
+              title="Set giá bán = Giá dự kiến cho từng domain"
+            >
+              <TrendingUp className="h-3 w-3" />
+              Dùng giá dự kiến
+            </Button>
+            <span className="text-[11px] text-muted-foreground italic ml-auto">
+              Để trống để hủy đánh dấu bán
+            </span>
+          </div>
+
+          <div className="max-h-72 overflow-y-auto space-y-1 mb-3">
+            {Object.keys(sellRows).map((domain) => {
+              const e = entries.find((x) => x.domain === domain);
+              const buyPrice = e?.purchasePrice ?? 0;
+              const sellNum = Number(sellRows[domain]);
+              const profit = sellRows[domain] && !isNaN(sellNum) ? sellNum - buyPrice : null;
+              return (
+                <div key={domain} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 text-xs">
+                  <span className="font-mono truncate">{domain}</span>
+                  <span className="text-muted-foreground whitespace-nowrap">
+                    Mua ${buyPrice.toFixed(2)}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-muted-foreground">Bán $</span>
+                    <Input
+                      type="number" step="0.01"
+                      placeholder="0.00"
+                      value={sellRows[domain]}
+                      onChange={(ev) => setSellRows({ ...sellRows, [domain]: ev.target.value })}
+                      className="h-6 w-24 text-xs"
+                    />
+                  </div>
+                  <span className={cn(
+                    "min-w-[80px] text-right font-semibold",
+                    profit == null ? "text-muted-foreground"
+                      : profit > 0 ? "text-emerald-600 dark:text-emerald-400"
+                      : profit < 0 ? "text-rose-600 dark:text-rose-400"
+                      : "text-muted-foreground"
+                  )}>
+                    {profit == null ? "—" : `${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              size="sm" onClick={saveSell} disabled={savingSell}
+              className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {savingSell ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
+              {savingSell ? "Đang lưu..." : "Lưu giá bán"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSellFormOpen(false)}>
+              Hủy
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+        {loading ? (
+          <p className="text-center py-12 text-muted-foreground">Đang tải...</p>
+        ) : entries.length === 0 ? (
+          <div className="flex flex-col items-center py-12 text-muted-foreground gap-2">
+            <Boxes className="h-8 w-8 opacity-40" />
+            <p className="text-sm">Kho trống — đánh dấu &quot;Đã mua&quot; ở Domain Picker để bắt đầu</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 border-b">
+                <tr>
+                  <th className="px-3 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      className="rounded cursor-pointer"
+                      aria-label="Select all"
+                      checked={filtered.length > 0 && filtered.every((e) => selected.has(e.domain))}
+                      ref={(el) => {
+                        if (!el) return;
+                        const sCount = filtered.filter((e) => selected.has(e.domain)).length;
+                        el.indeterminate = sCount > 0 && sCount < filtered.length;
+                      }}
+                      onChange={toggleSelectAll}
+                    />
+                  </th>
+                  <SortTh label="Domain" col="domain" current={sortKey} dir={sortDir} onSort={() => handleSort("domain")} />
+                  <SortTh label="Status" col="status" current={sortKey} dir={sortDir} onSort={() => handleSort("status")} />
+                  <SortTh label="Giá mua" col="purchasePrice" current={sortKey} dir={sortDir} onSort={() => handleSort("purchasePrice")} />
+                  <SortTh label="Giá dự kiến" col="expectedSellPrice" current={sortKey} dir={sortDir} onSort={() => handleSort("expectedSellPrice")} />
+                  <SortTh label="Giá bán" col="sellPrice" current={sortKey} dir={sortDir} onSort={() => handleSort("sellPrice")} />
+                  <SortTh label="Lợi nhuận" col="profit" current={sortKey} dir={sortDir} onSort={() => handleSort("profit")} />
+                  <SortTh label="Đánh giá" col="rating" current={sortKey} dir={sortDir} onSort={() => handleSort("rating")} />
+                  <SortTh label="Phân loại" col="category" current={sortKey} dir={sortDir} onSort={() => handleSort("category")} />
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Refs</th>
+                  <SortTh label="Ngày mua" col="purchasedAt" current={sortKey} dir={sortDir} onSort={() => handleSort("purchasedAt")} />
+                  <th className="w-20" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((e) => {
+                  const isEditing = editingDomain === e.domain;
+                  const isSold = e.sellPrice != null;
+                  const profit = profitOf(e);
+                  return (
+                    <tr key={e.domain} className={cn(
+                      "border-b border-border/50 hover:bg-muted/20 group align-top",
+                      selected.has(e.domain) && "bg-blue-50/50 dark:bg-blue-950/30"
+                    )}>
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          className="rounded cursor-pointer"
+                          checked={selected.has(e.domain)}
+                          onChange={() => toggleSelect(e.domain)}
+                        />
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span>{e.domain}</span>
+                          <a
+                            href={`https://${e.domain}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        {(isEditing || e.notes) && (
+                          <div className="mt-1">
+                            {isEditing ? (
+                              <Input
+                                placeholder="Notes..."
+                                value={editNotes}
+                                onChange={(ev) => setEditNotes(ev.target.value)}
+                                className="h-6 text-[11px] font-sans w-full max-w-[300px]"
+                              />
+                            ) : (
+                              <p className="text-[11px] font-sans text-muted-foreground italic">{e.notes}</p>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={cn(
+                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                          isSold
+                            ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+                            : "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+                        )}>
+                          {isSold ? <><DollarSign className="h-2.5 w-2.5" /> Đã bán</> : <><Boxes className="h-2.5 w-2.5" /> Đang giữ</>}
+                        </span>
+                        {isSold && e.soldAt && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            {new Date(e.soldAt).toLocaleDateString()}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {isEditing ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-muted-foreground">$</span>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              value={editPrice}
+                              onChange={(ev) => setEditPrice(ev.target.value)}
+                              className="h-7 w-24 text-xs"
+                              autoFocus
+                            />
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => startEdit(e)}
+                            className="text-sm font-semibold hover:underline cursor-pointer text-rose-600 dark:text-rose-400"
+                          >
+                            {e.purchasePrice != null ? `$${e.purchasePrice.toFixed(2)}` : "—"}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {editingExpected === e.domain ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-muted-foreground">$</span>
+                            <Input
+                              type="number" step="0.01"
+                              value={editExpectedValue}
+                              onChange={(ev) => setEditExpectedValue(ev.target.value)}
+                              onBlur={() => saveExpected(e.domain)}
+                              onKeyDown={(ev) => { if (ev.key === "Enter") saveExpected(e.domain); }}
+                              className="h-7 w-24 text-xs"
+                              autoFocus
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => startEditExpected(e)}
+                              className={cn(
+                                "text-sm hover:underline cursor-pointer whitespace-nowrap",
+                                e.expectedSellPrice != null
+                                  ? "font-semibold text-blue-600 dark:text-blue-400"
+                                  : "text-muted-foreground italic text-xs"
+                              )}
+                            >
+                              {e.expectedSellPrice != null ? `$${e.expectedSellPrice.toFixed(2)}` : "Đặt giá..."}
+                            </button>
+                            {e.expectedSellPrice != null && !isSold && (
+                              <button
+                                onClick={() => quickSellAtExpected(e)}
+                                className="opacity-0 group-hover:opacity-100 transition rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900 px-1 py-0.5 text-[10px] font-semibold"
+                                title={`Bán @ $${e.expectedSellPrice.toFixed(2)}`}
+                              >
+                                Bán
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {e.sellPrice != null ? (
+                          <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                            ${e.sellPrice.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-xs opacity-40">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {profit != null ? (
+                          <div>
+                            <span className={cn(
+                              "text-sm font-semibold whitespace-nowrap",
+                              profit > 0 ? "text-emerald-600 dark:text-emerald-400"
+                                : profit < 0 ? "text-rose-600 dark:text-rose-400"
+                                : "text-muted-foreground"
+                            )}>
+                              {profit >= 0 ? "+" : ""}${profit.toFixed(2)}
+                            </span>
+                            {e.purchasePrice != null && e.purchasePrice > 0 && (
+                              <p className={cn(
+                                "text-[10px]",
+                                profit > 0 ? "text-emerald-500" : "text-rose-500"
+                              )}>
+                                {((profit / e.purchasePrice) * 100).toFixed(0)}% ROI
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs opacity-40">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2"><RatingBadge rating={e.rating} /></td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px]">
+                        {e.category || <span className="opacity-40">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <RefList refs={refsByDomain.get(e.domain) ?? []} />
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(e.purchasedAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {isEditing ? (
+                            <>
+                              <button
+                                onClick={() => saveEdit(e.domain)}
+                                className="text-emerald-600 hover:text-emerald-700"
+                                title="Lưu"
+                              >
+                                <SaveIcon className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setEditingDomain(null)}
+                                className="text-muted-foreground hover:text-foreground"
+                                title="Hủy"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => startEdit(e)}
+                                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary transition"
+                                title="Sửa"
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </button>
+                              <button
+                                onClick={() => removeEntry(e.domain)}
+                                className="opacity-0 group-hover:opacity-100 text-destructive hover:opacity-80 transition"
+                                title="Xóa"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Toasts */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={cn(
+              "px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white pointer-events-auto",
+              t.isError ? "bg-destructive" : "bg-gray-800 dark:bg-gray-700"
+            )}
+          >
+            {t.message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function SortTh({ label, col, current, dir, onSort }: {
+  label: string; col: string; current: string; dir: 1 | -1; onSort: () => void;
+}) {
+  const active = current === col;
+  return (
+    <th
+      onClick={onSort}
+      className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide cursor-pointer select-none hover:bg-muted/50 whitespace-nowrap"
+    >
+      <span className="flex items-center gap-1">
+        {label}
+        <ArrowUpDown className={cn("h-3 w-3", active ? "text-primary" : "opacity-30")} />
+        {active && <span className="text-primary">{dir === -1 ? "↓" : "↑"}</span>}
+      </span>
+    </th>
+  );
+}
+
+function RefList({ refs }: { refs: { domain: string; dr: number }[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const COLLAPSED = 6;
+  const visible = expanded ? refs : refs.slice(0, COLLAPSED);
+  const hidden = refs.length - visible.length;
+
+  const copyAll = async (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!refs.length) return;
+    const text = refs.map((r) => r.domain).join("\n");
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el); el.focus(); el.select();
+      document.execCommand("copy"); document.body.removeChild(el);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (!refs.length) return <span className="text-xs text-muted-foreground">—</span>;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 max-w-[420px]">
+      <button
+        onClick={copyAll}
+        className={cn(
+          "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+          copied
+            ? "border-green-300 bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-300"
+            : "border-primary/40 bg-primary/5 hover:bg-primary/10 text-primary"
+        )}
+        title={`Copy ${refs.length} ref domain`}
+      >
+        {copied
+          ? <><Check className="h-3 w-3" />Đã copy</>
+          : <>📋 {refs.length}</>
+        }
+      </button>
+      {visible.map((r) => (
+        <a
+          key={r.domain}
+          href={`https://${r.domain}`}
+          target="_blank" rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 rounded border border-border bg-muted/30 hover:bg-muted/60 px-1.5 py-0.5 text-[11px] font-mono text-foreground/90 hover:text-primary transition-colors"
+        >
+          {r.domain}
+          <span className={cn(
+            "rounded px-1 text-[10px] font-bold",
+            r.dr >= 90 ? "text-emerald-600 dark:text-emerald-400"
+            : r.dr >= 70 ? "text-blue-600 dark:text-blue-400"
+            : r.dr >= 40 ? "text-yellow-600 dark:text-yellow-400"
+            : "text-muted-foreground"
+          )}>DR {r.dr}</span>
+        </a>
+      ))}
+      {hidden > 0 && (
+        <button onClick={() => setExpanded(true)} className="text-[11px] text-primary hover:underline px-1">
+          + {hidden}
+        </button>
+      )}
+      {expanded && refs.length > COLLAPSED && (
+        <button onClick={() => setExpanded(false)} className="text-[11px] text-muted-foreground hover:underline px-1">
+          collapse
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RatingBadge({ rating }: { rating: string | null }) {
+  if (!rating?.trim()) return <span className="text-xs text-muted-foreground opacity-40">—</span>;
+  const r = rating.toUpperCase();
+  const color =
+    r.includes("RẤT XẤU") ? "bg-red-200 dark:bg-red-950 text-red-900 dark:text-red-300 border-red-400"
+    : r.includes("XẤU") ? "bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-300"
+    : r.includes("RỦI RO") ? "bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 border-orange-300"
+    : r.includes("TRUNG BÌNH") ? "bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-300"
+    : r.includes("TỐT") ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-300"
+    : "bg-muted text-muted-foreground border-border";
+  return (
+    <span className={cn(
+      "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+      color
+    )} title={rating}>
+      {rating}
+    </span>
+  );
+}

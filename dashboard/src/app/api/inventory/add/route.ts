@@ -1,18 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { upsertEntries, DbEntry } from "@/lib/backlink-db";
+import { upsertEntries, AddInput } from "@/lib/inventory-db";
 
-// POST body: { entries: { domain: string, dr: number }[] }
 export async function POST(request: NextRequest) {
   try {
-    const { entries: toAdd }: { entries: DbEntry[] } = await request.json();
-    if (!Array.isArray(toAdd) || toAdd.length === 0) {
+    const { entries }: { entries: AddInput[] } = await request.json();
+    if (!Array.isArray(entries) || entries.length === 0) {
       return NextResponse.json(
         { error: "entries phải là mảng không rỗng" },
         { status: 400 }
       );
     }
-
-    const result = await upsertEntries(toAdd);
+    const result = await upsertEntries(entries);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     return NextResponse.json(

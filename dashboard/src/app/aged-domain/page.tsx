@@ -170,13 +170,31 @@ export default function AgedDomainPage() {
     const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
     if (!domains.length) return;
     const prompt =
-      `Phân tích Aged Domain bằng Ahrefs MCP.\n` +
-      `Cấu hình: DR tối thiểu = ${minDr}, limit = ${limitPerDomain} ref domains/target.\n\n` +
-      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n\n` +
+      `Phân tích Aged Domain bằng Ahrefs MCP + đánh giá chất lượng anchor.\n` +
+      `Cấu hình: DR tối thiểu = ${minDr}, limit = ${limitPerDomain} ref domains/target.\n` +
+      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n` +
+      `\n` +
       `Yêu cầu:\n` +
       `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${minDr}, sắp xếp theo domain_rating desc, limit ${limitPerDomain}.\n` +
-      `2. Tổng hợp kết quả: domain | số qualified refs | max DR.\n` +
-      `3. Lưu toàn bộ qualified referring domains (domain + DR) vào Backlink DB qua POST /api/aged-domain/db/add.`;
+      `2. Gọi thêm site-explorer-anchors hoặc xem top anchors để đánh giá chất lượng:\n` +
+      `   - ✅ TỐT — niche-relevant, anchor sạch, brand thật\n` +
+      `   - ⚠️ TRUNG BÌNH — có gì đó risky nhưng salvageable (real brand + minor spam)\n` +
+      `   - ⚠️ RỦI RO — mixed signals, cần review kỹ\n` +
+      `   - ❌ XẤU — bị abuse: gambling/porn/pharmacy/PBN/hacked\n` +
+      `   - ❌ RẤT XẤU — drug/phishing/malware/black SEO marketplace\n` +
+      `3. Output ra CSV với header và format chính xác như sau:\n` +
+      `\n` +
+      `target_domain,checked_at,refs,rating,category,detail\n` +
+      `\n` +
+      `Trong đó:\n` +
+      `- target_domain: domain đang phân tích (lowercase)\n` +
+      `- checked_at: ISO timestamp khi check (vd: 2026-04-30T10:00:00Z)\n` +
+      `- refs: list ref domains kèm DR, ngăn cách bằng dấu chấm phẩy. Format: "domain1.com (DR 92); domain2.com (DR 91); ..."\n` +
+      `- rating: một trong [✅ TỐT, ⚠️ TRUNG BÌNH, ⚠️ RỦI RO, ❌ XẤU, ❌ RẤT XẤU]\n` +
+      `- category: phân loại ngắn gọn (vd: "Spam Indonesian gambling", "Sạch - Health niche", "Hacked - Russian pharmacy")\n` +
+      `- detail: mô tả chi tiết evidence (top anchors, brand info, multilingual hints, ...)\n` +
+      `\n` +
+      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`;
     // Try modern clipboard API, fall back to execCommand for non-HTTPS / restricted contexts
     const doCopy = async () => {
       try {

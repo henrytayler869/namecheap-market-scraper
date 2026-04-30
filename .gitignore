@@ -11,3 +11,6 @@ storage
 
 # Added by Apify CLI
 .venv
+
+# Claude Code local-only files (permissions, etc.)
+.claude/settings.local.json

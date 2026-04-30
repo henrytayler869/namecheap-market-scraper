@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { upsertEntries, DbEntry } from "@/lib/backlink-db";
+import { markSold } from "@/lib/inventory-db";
 
-// POST body: { entries: { domain: string, dr: number }[] }
+// POST body: { rows: { domain, sellPrice }[] }
 export async function POST(request: NextRequest) {
   try {
-    const { entries: toAdd }: { entries: DbEntry[] } = await request.json();
-    if (!Array.isArray(toAdd) || toAdd.length === 0) {
+    const { rows }: { rows: { domain: string; sellPrice: number | null }[] } = await request.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json(
-        { error: "entries phải là mảng không rỗng" },
+        { error: "rows phải là mảng không rỗng" },
         { status: 400 }
       );
     }
-
-    const result = await upsertEntries(toAdd);
+    const result = await markSold(rows);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     return NextResponse.json(

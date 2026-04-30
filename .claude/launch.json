@@ -12,6 +12,13 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vitest", "--ui", "--port", "51204"],
       "port": 51204
+    },
+    {
+      "name": "Dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "dashboard",
+      "port": 3000
     }
   ]
 }
