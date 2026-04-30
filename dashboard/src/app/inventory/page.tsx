@@ -98,6 +98,11 @@ export default function InventoryPage() {
   const profitOf = (e: InventoryEntry) =>
     e.sellPrice != null && e.purchasePrice != null ? e.sellPrice - e.purchasePrice : null;
 
+  // Optimistic local update — avoids full reload after each edit
+  const patchLocal = useCallback((domain: string, patch: Partial<InventoryEntry>) => {
+    setEntries((prev) => prev.map((e) => (e.domain === domain ? { ...e, ...patch } : e)));
+  }, []);
+
   // ─── Date range ─────────────────────────────────────────────────────────────
   const dateRange = useMemo<{ from: Date | null; to: Date | null }>(() => {
     if (datePreset === "all") return { from: null, to: null };
@@ -274,16 +279,21 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      const now = new Date().toISOString();
+      setEntries((prev) => prev.map((e) => {
+        const r = rows.find((x) => x.domain === e.domain);
+        if (!r) return e;
+        return { ...e, sellPrice: r.sellPrice, soldAt: r.sellPrice == null ? null : now };
+      }));
       setSellFormOpen(false);
       setSelected(new Set());
-      await load();
       showToast(`✅ Đã cập nhật giá bán cho ${data.updated} domain`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setSavingSell(false);
     }
-  }, [sellRows, load, showToast]);
+  }, [sellRows, showToast]);
 
   const handleSort = (k: SortKey) => {
     if (sortKey === k) setSortDir((d) => (d === 1 ? -1 : 1));
@@ -304,20 +314,21 @@ export default function InventoryPage() {
   const saveExpected = useCallback(async (domain: string) => {
     const v = editExpectedValue.trim();
     const priceNum = v === "" ? null : Number(v);
+    const finalPrice = isNaN(priceNum as number) ? null : priceNum;
     try {
       const res = await fetch(`/api/inventory/${encodeURIComponent(domain)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedSellPrice: isNaN(priceNum as number) ? null : priceNum }),
+        body: JSON.stringify({ expectedSellPrice: finalPrice }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      patchLocal(domain, { expectedSellPrice: finalPrice });
       setEditingExpected(null);
-      await load();
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [editExpectedValue, load, showToast]);
+  }, [editExpectedValue, patchLocal, showToast]);
 
   // Bulk: sell all selected domains @ their expected price (skips those without)
   const bulkSellAtExpected = useCallback(async () => {
@@ -344,14 +355,18 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      const now = new Date().toISOString();
+      setEntries((prev) => prev.map((e) => {
+        const r = rows.find((x) => x.domain === e.domain);
+        return r ? { ...e, sellPrice: r.sellPrice, soldAt: now } : e;
+      }));
       setSelected(new Set());
-      await load();
       const skipNote = skipped > 0 ? ` · ${skipped} skipped (chưa có giá dự kiến)` : "";
       showToast(`✅ Bán ${data.updated} domain @ giá dự kiến${skipNote}`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [selected, entries, load, showToast]);
+  }, [selected, entries, showToast]);
 
   // Quick sell at expected price for one row
   const quickSellAtExpected = useCallback(async (e: InventoryEntry) => {
@@ -367,40 +382,38 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      await load();
+      patchLocal(e.domain, { sellPrice: e.expectedSellPrice, soldAt: new Date().toISOString() });
       showToast(`✅ Đã bán ${e.domain} @ $${e.expectedSellPrice.toFixed(2)}`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [load, showToast]);
+  }, [patchLocal, showToast]);
 
   const saveEdit = useCallback(async (domain: string) => {
     const priceNum = editPrice.trim() === "" ? null : Number(editPrice);
+    const finalPrice = isNaN(priceNum as number) ? null : priceNum;
     try {
       const res = await fetch(`/api/inventory/${encodeURIComponent(domain)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          purchasePrice: isNaN(priceNum as number) ? null : priceNum,
-          notes: editNotes,
-        }),
+        body: JSON.stringify({ purchasePrice: finalPrice, notes: editNotes }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      patchLocal(domain, { purchasePrice: finalPrice, notes: editNotes });
       setEditingDomain(null);
-      await load();
       showToast(`✅ Đã cập nhật ${domain}`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [editPrice, editNotes, load, showToast]);
+  }, [editPrice, editNotes, patchLocal, showToast]);
 
   const removeEntry = useCallback(async (domain: string) => {
     if (!confirm(`Xóa ${domain} khỏi kho?`)) return;
     await fetch(`/api/inventory/${encodeURIComponent(domain)}`, { method: "DELETE" });
-    await load();
+    setEntries((prev) => prev.filter((e) => e.domain !== domain));
     showToast(`🗑️ Đã xóa ${domain}`);
-  }, [load, showToast]);
+  }, [showToast]);
 
   const exportCsv = useCallback(() => {
     if (!filtered.length) return;
