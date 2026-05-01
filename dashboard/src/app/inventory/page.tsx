@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Loader2,
   Calendar,
+  Tag,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +67,7 @@ export default function InventoryPage() {
   const [sellRows, setSellRows] = useState<Record<string, string>>({});
   const [sellBulkPrice, setSellBulkPrice] = useState("");
   const [savingSell, setSavingSell] = useState(false);
+  const [copiedListing, setCopiedListing] = useState(false);
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -368,6 +370,37 @@ export default function InventoryPage() {
     }
   }, [selected, entries, showToast]);
 
+  // Listing rows = entries to "đăng bán" (must have expectedSellPrice).
+  // If selection exists, scope to selected; else use current filtered view.
+  const listingRows = useMemo(() => {
+    const source = selected.size > 0
+      ? filtered.filter((e) => selected.has(e.domain))
+      : filtered;
+    return source.filter((e) => e.expectedSellPrice != null);
+  }, [filtered, selected]);
+
+  // Copy listing in format "domain|price" per line
+  const copyListing = useCallback(async () => {
+    if (!listingRows.length) return;
+    const text = listingRows
+      .map((e) => `${e.domain}|${e.expectedSellPrice}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el);
+      el.focus(); el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    setCopiedListing(true);
+    setTimeout(() => setCopiedListing(false), 2000);
+    showToast(`✅ Đã copy ${listingRows.length} dòng "domain|giá"`);
+  }, [listingRows, showToast]);
+
   // Quick sell at expected price for one row
   const quickSellAtExpected = useCallback(async (e: InventoryEntry) => {
     if (e.expectedSellPrice == null) {
@@ -558,6 +591,23 @@ export default function InventoryPage() {
           <option value="holding">Đang giữ</option>
           <option value="sold">Đã bán</option>
         </select>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={copyListing}
+          disabled={!listingRows.length}
+          title={
+            listingRows.length === 0
+              ? "Cần có domain với Giá dự kiến để đăng bán"
+              : `Copy ${listingRows.length} dòng "domain|giá" vào clipboard`
+          }
+        >
+          {copiedListing
+            ? <Check className="h-3.5 w-3.5 text-green-500" />
+            : <Tag className="h-3.5 w-3.5" />}
+          {copiedListing ? "Đã copy!" : `Đăng Bán (${listingRows.length})`}
+        </Button>
         {selected.size > 0 && (() => {
           const withExpected = Array.from(selected).filter((d) => {
             const e = entries.find((x) => x.domain === d);
