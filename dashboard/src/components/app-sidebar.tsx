@@ -11,35 +11,21 @@ import {
   SidebarMenuButton,
   SidebarHeader,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarGroupContent,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  {
-    title: "Kho Domain",
-    href: "/inventory",
-    icon: Boxes,
-  },
-  {
-    title: "Domain Picker",
-    href: "/domain-picker",
-    icon: Filter,
-  },
-  {
-    title: "Aged Domain",
-    href: "/aged-domain",
-    icon: Archive,
-  },
-  {
-    title: "Trend Domain",
-    href: "/trend-domain/pipeline",
-    icon: TrendingUp,
-  },
-  {
-    title: "Cài đặt",
-    href: "/settings",
-    icon: Settings,
-  },
+const catcherItems = [
+  { title: "Kho Domain", href: "/inventory", icon: Boxes },
+  { title: "Domain Picker", href: "/domain-picker", icon: Filter },
+  { title: "Aged Domain", href: "/aged-domain", icon: Archive },
+  { title: "Trend Domain", href: "/trend-domain/pipeline", icon: TrendingUp },
+];
+
+const otherItems = [
+  { title: "Cài đặt", href: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {
@@ -68,24 +54,51 @@ export function AppSidebar() {
       </SidebarHeader>
 
       {/* Content */}
-      <SidebarContent className="p-2">
-        <SidebarMenu>
-          {navItems.map((item) => (
-            <SidebarMenuItem key={item.href}>
-              <SidebarMenuButton
-                isActive={pathname.startsWith(item.href)}
-                className={cn(
-                  "transition-colors",
-                  pathname.startsWith(item.href) && "font-medium"
-                )}
-                render={<Link href={item.href} />}
-              >
-                <item.icon className="h-4 w-4" />
-                <span>{item.title}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Domain Catcher</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {catcherItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith(item.href)}
+                    className={cn(
+                      "transition-colors",
+                      pathname.startsWith(item.href) && "font-medium"
+                    )}
+                    render={<Link href={item.href} />}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {otherItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith(item.href)}
+                    className={cn(
+                      "transition-colors",
+                      pathname.startsWith(item.href) && "font-medium"
+                    )}
+                    render={<Link href={item.href} />}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
 
       {/* Footer */}
