@@ -172,6 +172,8 @@ export default function InventoryPage() {
     let soldCostBasis = 0;
     let soldCount = 0;
     let holdingCount = 0;
+    let holdingExpectedTotal = 0;
+    let holdingExpectedCount = 0;
 
     const inScope = (e: InventoryEntry) =>
       datePreset === "all" || inRange(e.purchasedAt) || inRange(e.soldAt);
@@ -189,9 +191,16 @@ export default function InventoryPage() {
         }
       } else {
         holdingCount++;
+        if (e.expectedSellPrice != null) {
+          holdingExpectedTotal += e.expectedSellPrice;
+          holdingExpectedCount++;
+        }
       }
     }
-    return { totalSpend, totalRevenue, totalProfit, soldCount, holdingCount, soldCostBasis };
+    return {
+      totalSpend, totalRevenue, totalProfit, soldCount, holdingCount, soldCostBasis,
+      holdingExpectedTotal, holdingExpectedCount,
+    };
   }, [entries, datePreset, inRange]);
 
   const filtered = useMemo(() => {
@@ -681,7 +690,7 @@ export default function InventoryPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng Domain</p>
           <p className="text-2xl font-bold">{entries.length.toLocaleString()}</p>
@@ -721,6 +730,15 @@ export default function InventoryPage() {
               : "text-muted-foreground"
           )}>
             {stats.soldCostBasis > 0 ? `${((stats.totalProfit / stats.soldCostBasis) * 100).toFixed(1)}%` : "—"}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Tiềm năng</p>
+          <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+            ${stats.holdingExpectedTotal.toFixed(2)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {stats.holdingExpectedCount}/{stats.holdingCount} đang giữ có giá DK
           </p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
