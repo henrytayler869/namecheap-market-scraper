@@ -91,6 +91,19 @@ alter table domain_inventory add column if not exists sold_at    timestamptz;
 alter table domain_inventory add column if not exists expected_sell_price numeric(10, 2);
 create index if not exists domain_inventory_sold_idx on domain_inventory (sold_at desc);
 
+-- ─── Withdrawals (rút tiền từ doanh thu domain) ─────────────────────────────
+create table if not exists withdrawals (
+  id            uuid primary key default gen_random_uuid(),
+  withdrawn_at  timestamptz not null,
+  amount        numeric(12, 2) not null,
+  currency      text not null default 'USD',
+  status        text not null check (status in ('paid', 'progressing', 'under_review')),
+  notes         text,
+  created_at    timestamptz default now()
+);
+
+create index if not exists withdrawals_date_idx on withdrawals (withdrawn_at desc);
+
 -- Seed default blacklist (idempotent — re-run safe)
 insert into ref_blacklist (domain, note) values
   ('za.com',             'marketplace/parking'),
