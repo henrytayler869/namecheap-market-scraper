@@ -104,6 +104,38 @@ create table if not exists withdrawals (
 
 create index if not exists withdrawals_date_idx on withdrawals (withdrawn_at desc);
 
+-- ─── OS Service: Partners (đối tác) ──────────────────────────────────────────
+create table if not exists os_partners (
+  id                uuid primary key default gen_random_uuid(),
+  name              text not null,
+  discount_percent  numeric(5, 2) not null default 0,
+  quotation_link    text,
+  notes             text,
+  created_at        timestamptz default now(),
+  updated_at        timestamptz default now()
+);
+
+create index if not exists os_partners_name_idx on os_partners (name);
+
+-- ─── OS Service: Orders (đơn hàng) ───────────────────────────────────────────
+-- payment_splits: jsonb array of percentages, e.g. [50, 30, 20] for 3-installment
+-- 50/30/20 split. Must sum to 100. payment_count = length(payment_splits).
+create table if not exists os_orders (
+  id                uuid primary key default gen_random_uuid(),
+  partner_id        uuid references os_partners(id) on delete restrict,
+  package_name      text not null,
+  price             numeric(12, 2) not null,
+  revenue           numeric(12, 2) not null,
+  payment_count     integer not null default 1,
+  payment_splits    jsonb not null default '[100]'::jsonb,
+  notes             text,
+  created_at        timestamptz default now(),
+  updated_at        timestamptz default now()
+);
+
+create index if not exists os_orders_partner_idx on os_orders (partner_id);
+create index if not exists os_orders_created_idx on os_orders (created_at desc);
+
 -- Seed default blacklist (idempotent — re-run safe)
 insert into ref_blacklist (domain, note) values
   ('za.com',             'marketplace/parking'),

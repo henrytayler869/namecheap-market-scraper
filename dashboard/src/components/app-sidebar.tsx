@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Archive, Filter, Boxes, Settings, LogOut } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Archive, Filter, Boxes, Settings, LogOut, Users, ShoppingCart } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,8 +24,10 @@ const catcherItems = [
   { title: "Trend Domain", href: "/trend-domain/pipeline", icon: TrendingUp },
 ];
 
-// To be populated later
-const osServiceItems: { title: string; href: string; icon: typeof Boxes }[] = [];
+const osServiceItems = [
+  { title: "Danh sách đối tác", href: "/os-service/partners", icon: Users },
+  { title: "Danh sách đơn hàng", href: "/os-service/orders", icon: ShoppingCart },
+];
 
 const otherItems = [
   { title: "Cài đặt", href: "/settings", icon: Settings },
