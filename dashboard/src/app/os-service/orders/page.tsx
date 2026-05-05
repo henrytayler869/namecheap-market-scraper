@@ -7,6 +7,7 @@ import {
   Trash2,
   X,
   Edit2,
+  Copy,
   Save as SaveIcon,
   Loader2,
   Search,
@@ -67,11 +68,18 @@ function equalSplits(n: number): number[] {
   return splits;
 }
 
+type DateRangePreset = "today" | "7d" | "30d" | "thisMonth" | "lastMonth" | "thisYear" | "all" | "custom";
+
 export default function OrdersPage() {
   const [partners, setPartners] = useState<Partner[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+
+  // Date range filter (scopes stats + tables)
+  const [datePreset, setDatePreset] = useState<DateRangePreset>("all");
+  const [dateStart, setDateStart] = useState<string>("");
+  const [dateEnd, setDateEnd] = useState<string>("");
 
   // Form
   const [formOpen, setFormOpen] = useState(false);
@@ -79,20 +87,20 @@ export default function OrdersPage() {
   const [oPartnerId, setOPartnerId] = useState<string>("");
   const [oPackage, setOPackage] = useState("");
   const [oPrice, setOPrice] = useState("");
-  const [oRevenueOverride, setORevenueOverride] = useState<string>(""); // optional override
   const [oCurrency, setOCurrency] = useState<OrderCurrency>("USD");
   const [oPaymentCount, setOPaymentCount] = useState(1);
   const [oSplits, setOSplits] = useState<string[]>(["100"]);
   const [oNotes, setONotes] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Withdrawals
+  // Withdrawals (scoped to a specific order)
   const [withdrawals, setWithdrawals] = useState<OsWithdrawal[]>([]);
   const [wFormOpen, setWFormOpen] = useState(false);
   const [wEditingId, setWEditingId] = useState<string | null>(null);
+  const [wOrderId, setWOrderId] = useState<string>("");
+  const [wInstallment, setWInstallment] = useState<number | null>(null); // 1-based, null = ad-hoc
   const [wDate, setWDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [wAmount, setWAmount] = useState("");
-  const [wCurrency, setWCurrency] = useState<OrderCurrency>("USD");
   const [wNotes, setWNotes] = useState("");
   const [wSaving, setWSaving] = useState(false);
   const [wListOpen, setWListOpen] = useState(false);
@@ -132,24 +140,67 @@ export default function OrdersPage() {
     return m;
   }, [partners]);
 
+  // Resolve date range: returns {start, end} as epoch ms (null = unbounded)
+  const dateRange = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayMs = 86400000;
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+    const startOfYear = new Date(now.getFullYear(), 0, 1).getTime();
+    const startOfNextYear = new Date(now.getFullYear() + 1, 0, 1).getTime();
+    switch (datePreset) {
+      case "all": return { start: null as number | null, end: null as number | null };
+      case "today": return { start: today, end: today + dayMs - 1 };
+      case "7d": return { start: today - 6 * dayMs, end: today + dayMs - 1 };
+      case "30d": return { start: today - 29 * dayMs, end: today + dayMs - 1 };
+      case "thisMonth": return { start: startOfMonth, end: startOfNextMonth - 1 };
+      case "lastMonth": return { start: startOfLastMonth, end: startOfMonth - 1 };
+      case "thisYear": return { start: startOfYear, end: startOfNextYear - 1 };
+      case "custom": return {
+        start: dateStart ? new Date(dateStart + "T00:00:00").getTime() : null,
+        end: dateEnd ? new Date(dateEnd + "T23:59:59.999").getTime() : null,
+      };
+    }
+  }, [datePreset, dateStart, dateEnd]);
+
+  const inRange = useCallback((isoDate: string): boolean => {
+    if (!dateRange.start && !dateRange.end) return true;
+    const t = new Date(isoDate).getTime();
+    if (dateRange.start != null && t < dateRange.start) return false;
+    if (dateRange.end != null && t > dateRange.end) return false;
+    return true;
+  }, [dateRange]);
+
+  // Orders/withdrawals filtered by date range (used by stats + tables)
+  const ordersInRange = useMemo(
+    () => orders.filter((o) => inRange(o.createdAt)),
+    [orders, inRange]
+  );
+  const withdrawalsInRange = useMemo(
+    () => withdrawals.filter((w) => inRange(w.withdrawnAt)),
+    [withdrawals, inRange]
+  );
+
+  // Search applies on top of date filter
   const filtered = useMemo(
-    () => orders.filter((o) => {
+    () => ordersInRange.filter((o) => {
       if (!search) return true;
       const q = search.toLowerCase();
       const partnerName = (o.partnerId && partnerById.get(o.partnerId)?.name) || "";
       return o.packageName.toLowerCase().includes(q) || partnerName.toLowerCase().includes(q);
     }),
-    [orders, search, partnerById]
+    [ordersInRange, search, partnerById]
   );
 
-  // Auto-compute revenue from selected partner's discount
+  // Auto-compute revenue from selected partner's discount — không cho user override.
+  // Giá đổi → Doanh thu đổi theo % đối tác.
   const selectedPartner = oPartnerId ? partnerById.get(oPartnerId) : null;
   const computedRevenue = selectedPartner && oPrice
     ? +(((parseFormattedNumber(oPrice) || 0) * (selectedPartner.discountPercent / 100))).toFixed(2)
     : 0;
-  const effectiveRevenue = oRevenueOverride.trim() !== ""
-    ? parseFormattedNumber(oRevenueOverride) || 0
-    : computedRevenue;
+  const effectiveRevenue = computedRevenue;
 
   const splitsSum = oSplits.reduce((s, v) => s + (parseFloat(v) || 0), 0);
   const splitsValid = Math.abs(splitsSum - 100) < 0.01;
@@ -159,7 +210,6 @@ export default function OrdersPage() {
     setOPartnerId(partners[0]?.id ?? "");
     setOPackage("");
     setOPrice("");
-    setORevenueOverride("");
     setOCurrency("USD");
     setOPaymentCount(1);
     setOSplits(["100"]);
@@ -172,7 +222,19 @@ export default function OrdersPage() {
     setOPartnerId(o.partnerId ?? "");
     setOPackage(o.packageName);
     setOPrice(formatNumberDisplay(String(o.price)));
-    setORevenueOverride(formatNumberDisplay(String(o.revenue)));
+    setOCurrency(o.currency);
+    setOPaymentCount(o.paymentCount);
+    setOSplits(o.paymentSplits.map(String));
+    setONotes(o.notes ?? "");
+    setFormOpen(true);
+  };
+
+  // Clone: tạo đơn hàng mới từ template của đơn cũ — không gắn editingId nên Save sẽ POST
+  const openCloneForm = (o: Order) => {
+    setEditingId(null);
+    setOPartnerId(o.partnerId ?? "");
+    setOPackage(`${o.packageName} (copy)`);
+    setOPrice(formatNumberDisplay(String(o.price)));
     setOCurrency(o.currency);
     setOPaymentCount(o.paymentCount);
     setOSplits(o.paymentSplits.map(String));
@@ -267,43 +329,42 @@ export default function OrdersPage() {
 
   // ─── Withdrawals ─────────────────────────────────────────────────────────────
 
-  const openWithdrawalForm = useCallback(() => {
+  const openWithdrawalForm = useCallback((orderId: string) => {
     setWEditingId(null);
+    setWOrderId(orderId);
+    setWInstallment(null);
     setWDate(new Date().toISOString().slice(0, 10));
     setWAmount("");
-    // default currency = most common in orders, fallback USD
-    const counts: Record<string, number> = {};
-    for (const o of orders) counts[o.currency] = (counts[o.currency] ?? 0) + 1;
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as OrderCurrency | undefined;
-    setWCurrency(top ?? "USD");
     setWNotes("");
     setWFormOpen(true);
-  }, [orders]);
+  }, []);
 
   const openEditWithdrawal = useCallback((w: OsWithdrawal) => {
     setWEditingId(w.id);
+    setWOrderId(w.orderId ?? "");
+    setWInstallment(w.installment ?? null);
     setWDate(new Date(w.withdrawnAt).toISOString().slice(0, 10));
     setWAmount(formatNumberDisplay(String(w.amount)));
-    setWCurrency(w.currency);
     setWNotes(w.notes ?? "");
     setWFormOpen(true);
   }, []);
 
   const saveWithdrawal = useCallback(async () => {
     const amount = parseFormattedNumber(wAmount);
-    if (!wDate || isNaN(amount) || amount <= 0) {
-      showToast("❌ Cần nhập ngày + số tiền hợp lệ", true);
+    if (!wDate || isNaN(amount) || amount <= 0 || !wOrderId) {
+      showToast("❌ Thiếu đơn hàng / ngày / số tiền hợp lệ", true);
       return;
     }
     setWSaving(true);
     try {
-      const payload = {
-        withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
-        amount,
-        currency: wCurrency,
-        notes: wNotes.trim() || null,
-      };
       if (wEditingId) {
+        // Edit mutable fields (date, amount, installment, notes); order/currency locked
+        const payload = {
+          withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
+          amount,
+          installment: wInstallment,
+          notes: wNotes.trim() || null,
+        };
         const res = await fetch(`/api/os-withdrawals/${wEditingId}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -311,17 +372,24 @@ export default function OrdersPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Lỗi");
         const id = wEditingId;
-        setWithdrawals((prev) => prev.map((w) => w.id === id ? { ...w, withdrawnAt: payload.withdrawnAt, amount: payload.amount, currency: payload.currency, notes: payload.notes } : w));
+        setWithdrawals((prev) => prev.map((w) => w.id === id ? { ...w, ...payload } : w));
         showToast("✅ Đã cập nhật");
       } else {
         const res = await fetch("/api/os-withdrawals", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            orderId: wOrderId,
+            installment: wInstallment,
+            withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
+            amount,
+            notes: wNotes.trim() || null,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Lỗi");
         setWithdrawals((prev) => [data.entry, ...prev]);
-        showToast(`✅ Đã rút ${formatMoney(amount, wCurrency)}`);
+        const order = orders.find((o) => o.id === wOrderId);
+        showToast(`✅ Đã rút ${formatMoney(amount, order?.currency ?? "USD")}`);
       }
       setWFormOpen(false);
       setWEditingId(null);
@@ -330,7 +398,7 @@ export default function OrdersPage() {
     } finally {
       setWSaving(false);
     }
-  }, [wDate, wAmount, wCurrency, wNotes, wEditingId, showToast]);
+  }, [wDate, wAmount, wNotes, wOrderId, wInstallment, wEditingId, orders, showToast]);
 
   const deleteWithdrawal = useCallback(async (id: string) => {
     if (!confirm("Xóa lần rút này?")) return;
@@ -343,15 +411,57 @@ export default function OrdersPage() {
     }
   }, [showToast]);
 
-  // Stats grouped by currency (mixing currencies in one sum is misleading)
+  // Per-order withdrawn map (date-filtered): orderId → total amount withdrawn in range
+  const withdrawnByOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const w of withdrawalsInRange) {
+      if (!w.orderId) continue;
+      m.set(w.orderId, (m.get(w.orderId) ?? 0) + w.amount);
+    }
+    return m;
+  }, [withdrawalsInRange]);
+
+  // Per-installment withdrawn map (all-time, used to flag "đã rút" trong form)
+  const withdrawnByInstallment = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const w of withdrawals) {
+      if (!w.orderId || w.installment == null) continue;
+      const k = `${w.orderId}|${w.installment}`;
+      m.set(k, (m.get(k) ?? 0) + w.amount);
+    }
+    return m;
+  }, [withdrawals]);
+
+  // Quick lookup: order by id
+  const orderById = useMemo(() => {
+    const m = new Map<string, Order>();
+    for (const o of orders) m.set(o.id, o);
+    return m;
+  }, [orders]);
+
+  // Effective revenue per order = Giá × % đối tác (auto-computed).
+  // Override mọi giá trị `o.revenue` cũ trong DB để UI nhất quán với form.
+  const revenueByOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const o of orders) {
+      const partner = o.partnerId ? partnerById.get(o.partnerId) : null;
+      const computed = partner
+        ? +((o.price * partner.discountPercent) / 100).toFixed(2)
+        : o.revenue;
+      m.set(o.id, computed);
+    }
+    return m;
+  }, [orders, partnerById]);
+
+  // Stats grouped by currency, scoped to date range (mixing currencies is misleading)
   const totals = useMemo(() => {
     const byCurrency: Record<string, { price: number; revenue: number; withdrawn: number; remaining: number }> = {};
-    for (const o of orders) {
+    for (const o of ordersInRange) {
       if (!byCurrency[o.currency]) byCurrency[o.currency] = { price: 0, revenue: 0, withdrawn: 0, remaining: 0 };
       byCurrency[o.currency].price += o.price;
-      byCurrency[o.currency].revenue += o.revenue;
+      byCurrency[o.currency].revenue += revenueByOrder.get(o.id) ?? o.revenue;
     }
-    for (const w of withdrawals) {
+    for (const w of withdrawalsInRange) {
       if (!byCurrency[w.currency]) byCurrency[w.currency] = { price: 0, revenue: 0, withdrawn: 0, remaining: 0 };
       byCurrency[w.currency].withdrawn += w.amount;
     }
@@ -359,7 +469,7 @@ export default function OrdersPage() {
       byCurrency[cur].remaining = byCurrency[cur].revenue - byCurrency[cur].withdrawn;
     }
     return byCurrency;
-  }, [orders, withdrawals]);
+  }, [ordersInRange, withdrawalsInRange, revenueByOrder]);
 
   const totalEntries = useMemo(
     () => Object.entries(totals) as [OrderCurrency, { price: number; revenue: number; withdrawn: number; remaining: number }][],
@@ -375,29 +485,71 @@ export default function OrdersPage() {
             Đơn hàng dịch vụ với phân chia % thanh toán theo từng đợt.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            className="gap-2 bg-purple-600 hover:bg-purple-700 text-white"
-            onClick={openWithdrawalForm}
-            disabled={orders.length === 0}
-            title="Ghi nhận lần rút doanh thu"
+        <Button onClick={openCreateForm} size="sm" className="gap-2" disabled={partners.length === 0}>
+          <Plus className="h-4 w-4" />
+          Thêm đơn hàng
+        </Button>
+      </div>
+
+      {/* Date range filter */}
+      <div className="rounded-lg border bg-card p-3 flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-muted-foreground uppercase mr-1">📅 Khoảng thời gian:</span>
+        {([
+          { key: "today", label: "Hôm nay" },
+          { key: "7d", label: "7 ngày" },
+          { key: "30d", label: "30 ngày" },
+          { key: "thisMonth", label: "Tháng này" },
+          { key: "lastMonth", label: "Tháng trước" },
+          { key: "thisYear", label: "Năm nay" },
+          { key: "all", label: "Tất cả" },
+          { key: "custom", label: "Tùy chỉnh" },
+        ] as const).map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setDatePreset(key)}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition",
+              datePreset === key
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-background hover:border-primary/50 hover:bg-muted/30",
+            )}
           >
-            <Wallet className="h-4 w-4" />
-            Rút tiền
-          </Button>
-          <Button onClick={openCreateForm} size="sm" className="gap-2" disabled={partners.length === 0}>
-            <Plus className="h-4 w-4" />
-            Thêm đơn hàng
-          </Button>
-        </div>
+            {label}
+          </button>
+        ))}
+        {datePreset === "custom" && (
+          <div className="flex items-center gap-1.5 ml-1">
+            <Input
+              type="date"
+              value={dateStart}
+              onChange={(e) => setDateStart(e.target.value)}
+              className="h-7 text-xs w-36"
+            />
+            <span className="text-muted-foreground text-xs">→</span>
+            <Input
+              type="date"
+              value={dateEnd}
+              onChange={(e) => setDateEnd(e.target.value)}
+              className="h-7 text-xs w-36"
+            />
+          </div>
+        )}
+        {dateRange.start != null || dateRange.end != null ? (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            {dateRange.start ? new Date(dateRange.start).toLocaleDateString() : "..."}
+            {" → "}
+            {dateRange.end ? new Date(dateRange.end).toLocaleDateString() : "..."}
+          </span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground ml-auto">Toàn bộ dữ liệu</span>
+        )}
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng đơn</p>
-          <p className="text-2xl font-bold">{orders.length}</p>
+          <p className="text-2xl font-bold">{ordersInRange.length}</p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng giá trị</p>
@@ -528,18 +680,18 @@ export default function OrdersPage() {
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Doanh thu
                 {selectedPartner && (
-                  <span className="ml-1 text-muted-foreground">
-                    (auto: {formatMoney(computedRevenue, oCurrency)} = {selectedPartner.discountPercent}%)
+                  <span className="ml-1 text-[10px] text-muted-foreground">
+                    (auto = giá × {selectedPartner.discountPercent}%)
                   </span>
                 )}
               </label>
               <Input
                 type="text"
-                inputMode="decimal"
-                value={oRevenueOverride}
-                onChange={(e) => setORevenueOverride(formatNumberDisplay(e.target.value))}
-                placeholder={`Auto: ${formatNumberDisplay(String(computedRevenue))}`}
-                className="font-mono"
+                disabled
+                value={formatNumberDisplay(String(computedRevenue))}
+                placeholder="0"
+                className="font-mono bg-muted/40 text-emerald-600 dark:text-emerald-400 font-semibold"
+                title="Tự tính từ Giá × % đối tác — không sửa được"
               />
             </div>
             <div>
@@ -568,7 +720,8 @@ export default function OrdersPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {oSplits.map((s, i) => {
                 const pct = parseFloat(s) || 0;
-                const installmentRev = +(effectiveRevenue * pct / 100).toFixed(2);
+                const priceNum = parseFormattedNumber(oPrice) || 0;
+                const installmentRev = +(priceNum * pct / 100).toFixed(2);
                 return (
                   <div key={i} className="space-y-1">
                     <label className="block text-[10px] uppercase text-muted-foreground">
@@ -614,65 +767,153 @@ export default function OrdersPage() {
         </div>
       )}
 
-      {/* Withdrawal form */}
-      {wFormOpen && (
-        <div className="rounded-xl border border-purple-300 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-950/30 p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-purple-600" />
-              {wEditingId ? "Sửa lần rút" : "Ghi nhận rút doanh thu"}
-            </h3>
-            <button onClick={() => { setWFormOpen(false); setWEditingId(null); }} className="text-muted-foreground hover:text-foreground">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Ngày</label>
-              <Input type="date" value={wDate} onChange={(e) => setWDate(e.target.value)} className="h-8 text-sm" />
+      {/* Withdrawal form (scoped to a specific order) */}
+      {wFormOpen && (() => {
+        const order = orderById.get(wOrderId);
+        const partner = order?.partnerId ? partnerById.get(order.partnerId) : null;
+        const totalRevenue = order ? (revenueByOrder.get(order.id) ?? order.revenue) : 0;
+        const alreadyWithdrawn = (withdrawnByOrder.get(wOrderId) ?? 0)
+          - (wEditingId ? (withdrawals.find((w) => w.id === wEditingId)?.amount ?? 0) : 0);
+        const remainingBefore = totalRevenue - alreadyWithdrawn;
+        const enteredAmount = parseFormattedNumber(wAmount) || 0;
+        const remainingAfter = remainingBefore - enteredAmount;
+        return (
+          <div className="rounded-xl border border-purple-300 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-950/30 p-5 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-purple-600" />
+                {wEditingId ? "Sửa lần rút" : "Rút doanh thu từ đơn hàng"}
+              </h3>
+              <button onClick={() => { setWFormOpen(false); setWEditingId(null); }} className="text-muted-foreground hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Số tiền</label>
-              <Input
-                type="text"
-                inputMode="decimal"
-                value={wAmount}
-                onChange={(e) => setWAmount(formatNumberDisplay(e.target.value))}
-                placeholder="0"
-                className="h-8 text-sm font-mono"
-              />
+
+            {/* Order context (read-only) */}
+            {order ? (
+              <div className="mb-4 rounded-lg border border-purple-200 dark:border-purple-800 bg-background/50 px-3 py-2 text-xs space-y-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-muted-foreground">Đơn:</span>
+                  <span className="font-semibold">{order.packageName}</span>
+                  {partner && <span className="text-muted-foreground">· {partner.name} ({partner.discountPercent}%)</span>}
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-1">
+                  <div>
+                    <p className="text-[10px] uppercase text-muted-foreground">Doanh thu</p>
+                    <p className="font-semibold text-emerald-600 dark:text-emerald-400">{formatMoney(totalRevenue, order.currency)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase text-muted-foreground">Đã rút</p>
+                    <p className="font-semibold text-purple-600 dark:text-purple-400">{formatMoney(alreadyWithdrawn, order.currency)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase text-muted-foreground">Còn lại {enteredAmount > 0 && "(sau lần này)"}</p>
+                    <p className={cn(
+                      "font-semibold",
+                      remainingAfter < 0 ? "text-rose-600 dark:text-rose-400"
+                      : remainingAfter === 0 ? "text-muted-foreground"
+                      : "text-blue-600 dark:text-blue-400"
+                    )}>
+                      {formatMoney(remainingAfter, order.currency)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mb-4 text-xs text-rose-600">Đơn hàng không tồn tại</div>
+            )}
+
+            {/* Quick-pick by installment */}
+            {order && order.paymentSplits.length > 0 && (
+              <div className="mb-4 rounded-lg border border-purple-200 dark:border-purple-800 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase font-semibold text-muted-foreground mb-2">Chọn đợt rút (auto-fill số tiền = Doanh thu × % đợt)</p>
+                <div className="flex flex-wrap gap-2">
+                  {order.paymentSplits.map((pct, i) => {
+                    const idx = i + 1;
+                    const installmentRevenue = +(totalRevenue * pct / 100).toFixed(2);
+                    const installmentPaid = withdrawnByInstallment.get(`${order.id}|${idx}`) ?? 0;
+                    const isPaid = installmentPaid > 0;
+                    const isSelected = wInstallment === idx;
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setWInstallment(idx);
+                          setWAmount(formatNumberDisplay(String(installmentRevenue)));
+                        }}
+                        className={cn(
+                          "flex flex-col items-start rounded-lg border px-3 py-1.5 text-xs transition",
+                          isSelected
+                            ? "border-purple-600 bg-purple-100 dark:bg-purple-900/50 ring-2 ring-purple-400"
+                            : "border-border bg-background hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/30",
+                        )}
+                      >
+                        <span className="flex items-center gap-1 font-semibold">
+                          Đợt {idx} ({pct}%)
+                          {isPaid && <span className="text-[9px] bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-400 px-1 py-0.5 rounded">đã rút</span>}
+                        </span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-mono text-[11px]">
+                          {formatMoney(installmentRevenue, order.currency)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setWInstallment(null)}
+                    className={cn(
+                      "flex flex-col items-start rounded-lg border px-3 py-1.5 text-xs transition",
+                      wInstallment === null
+                        ? "border-amber-500 bg-amber-50 dark:bg-amber-950/40 ring-2 ring-amber-300"
+                        : "border-border bg-background hover:border-amber-400",
+                    )}
+                  >
+                    <span className="font-semibold">Tùy chỉnh</span>
+                    <span className="text-muted-foreground text-[11px]">không gắn đợt</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Ngày</label>
+                <Input type="date" value={wDate} onChange={(e) => setWDate(e.target.value)} className="h-8 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                  Số tiền {order && <span className="text-muted-foreground">({order.currency})</span>}
+                </label>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={wAmount}
+                  onChange={(e) => setWAmount(formatNumberDisplay(e.target.value))}
+                  placeholder="0"
+                  className="h-8 text-sm font-mono"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Đơn vị</label>
-              <select
-                value={wCurrency}
-                onChange={(e) => setWCurrency(e.target.value as OrderCurrency)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Ghi chú (optional)</label>
+              <Input value={wNotes} onChange={(e) => setWNotes(e.target.value)} placeholder="vd: chuyển khoản bank ACB" className="h-8 text-sm" />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={saveWithdrawal}
+                disabled={wSaving}
+                className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
               >
-                {ORDER_CURRENCIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+                {wSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
+                {wSaving ? "Đang lưu..." : (wEditingId ? "Cập nhật" : "Lưu")}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { setWFormOpen(false); setWEditingId(null); }}>Hủy</Button>
             </div>
           </div>
-          <div className="mb-3">
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Ghi chú (optional)</label>
-            <Input value={wNotes} onChange={(e) => setWNotes(e.target.value)} placeholder="vd: chuyển khoản bank ACB" className="h-8 text-sm" />
-          </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              onClick={saveWithdrawal}
-              disabled={wSaving}
-              className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
-            >
-              {wSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
-              {wSaving ? "Đang lưu..." : (wEditingId ? "Cập nhật" : "Lưu")}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setWFormOpen(false); setWEditingId(null); }}>Hủy</Button>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Search */}
       <div className="relative max-w-sm">
@@ -694,6 +935,11 @@ export default function OrdersPage() {
             <ShoppingCart className="h-8 w-8 opacity-40" />
             <p className="text-sm">Chưa có đơn hàng</p>
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center py-12 text-muted-foreground gap-2">
+            <ShoppingCart className="h-8 w-8 opacity-40" />
+            <p className="text-sm">Không có đơn hàng nào trong khoảng thời gian / tìm kiếm đã chọn</p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -711,6 +957,7 @@ export default function OrdersPage() {
               <tbody>
                 {filtered.map((o) => {
                   const partner = o.partnerId ? partnerById.get(o.partnerId) : null;
+                  const revenue = revenueByOrder.get(o.id) ?? o.revenue;
                   return (
                     <tr key={o.id} className="border-b border-border/50 hover:bg-muted/20 group align-top">
                       <td className="px-3 py-2 text-sm">
@@ -735,7 +982,31 @@ export default function OrdersPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 font-semibold whitespace-nowrap">{formatMoney(o.price, o.currency)}</td>
-                      <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">{formatMoney(o.revenue, o.currency)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <p className="font-semibold text-emerald-600 dark:text-emerald-400">{formatMoney(revenue, o.currency)}</p>
+                        {(() => {
+                          const w = withdrawnByOrder.get(o.id) ?? 0;
+                          const remaining = revenue - w;
+                          if (w === 0) return (
+                            <p className="text-[10px] text-muted-foreground italic mt-0.5">chưa rút</p>
+                          );
+                          return (
+                            <>
+                              <p className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5">
+                                Đã rút: {formatMoney(w, o.currency)}
+                              </p>
+                              <p className={cn(
+                                "text-[10px]",
+                                remaining > 0 ? "text-blue-600 dark:text-blue-400"
+                                : remaining < 0 ? "text-rose-600 dark:text-rose-400"
+                                : "text-muted-foreground"
+                              )}>
+                                Còn: {formatMoney(remaining, o.currency)}
+                              </p>
+                            </>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2">
                         <p className="text-xs font-medium">{o.paymentCount} đợt</p>
                         <div className="flex flex-wrap gap-1 mt-1 max-w-[320px]">
@@ -743,9 +1014,9 @@ export default function OrdersPage() {
                             <span
                               key={i}
                               className="inline-flex items-center rounded border border-border bg-muted/30 px-1.5 py-0.5 text-[10px]"
-                              title={`Đợt ${i + 1}: ${pct}% = ${formatMoney(o.revenue * pct / 100, o.currency)}`}
+                              title={`Đợt ${i + 1}: ${pct}% = ${formatMoney(o.price * pct / 100, o.currency)}`}
                             >
-                              {pct}% ({formatMoney(o.revenue * pct / 100, o.currency)})
+                              {pct}% ({formatMoney(o.price * pct / 100, o.currency)})
                             </span>
                           ))}
                         </div>
@@ -754,13 +1025,26 @@ export default function OrdersPage() {
                         {new Date(o.createdAt).toLocaleDateString()}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition">
-                          <button onClick={() => openEditForm(o)} className="text-muted-foreground hover:text-primary" title="Sửa">
-                            <Edit2 className="h-3.5 w-3.5" />
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openWithdrawalForm(o.id)}
+                            className="rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900 px-1.5 py-0.5 text-[10px] font-semibold inline-flex items-center gap-1"
+                            title="Rút doanh thu từ đơn này"
+                          >
+                            <Wallet className="h-2.5 w-2.5" />
+                            Rút
                           </button>
-                          <button onClick={() => remove(o)} className="text-destructive hover:opacity-80" title="Xóa">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition">
+                            <button onClick={() => openCloneForm(o)} className="text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400" title="Clone — tạo đơn tương tự">
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                            <button onClick={() => openEditForm(o)} className="text-muted-foreground hover:text-primary" title="Sửa">
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button onClick={() => remove(o)} className="text-destructive hover:opacity-80" title="Xóa">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -782,7 +1066,7 @@ export default function OrdersPage() {
             <Wallet className="h-4 w-4 text-purple-600" />
             <h2 className="text-sm font-semibold uppercase tracking-wide">Lịch sử rút doanh thu</h2>
             <span className="bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 text-xs font-bold px-2 py-0.5 rounded-full">
-              {withdrawals.length} lần
+              {withdrawalsInRange.length} lần
             </span>
             {totalEntries.filter(([, t]) => t.withdrawn > 0).map(([cur, t]) => (
               <span key={cur} className="bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
@@ -795,9 +1079,9 @@ export default function OrdersPage() {
 
         {wListOpen && (
           <div className="border-t px-6 pb-6">
-            {withdrawals.length === 0 ? (
+            {withdrawalsInRange.length === 0 ? (
               <p className="text-center py-8 text-sm text-muted-foreground">
-                Chưa có lần rút nào. Click <strong>Rút tiền</strong> ở trên để ghi nhận.
+                Không có lần rút nào trong khoảng thời gian đã chọn.
               </p>
             ) : (
               <div className="rounded-lg border overflow-hidden mt-4">
@@ -805,21 +1089,45 @@ export default function OrdersPage() {
                   <thead className="bg-muted/50 border-b">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ngày</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Đơn hàng</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Đợt</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Đối tác</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Số tiền</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ghi chú</th>
                       <th className="w-20" />
                     </tr>
                   </thead>
                   <tbody>
-                    {withdrawals.map((w) => (
+                    {withdrawalsInRange.map((w) => {
+                      const order = w.orderId ? orderById.get(w.orderId) : null;
+                      const partner = order?.partnerId ? partnerById.get(order.partnerId) : null;
+                      return (
                       <tr key={w.id} className="border-b border-border/30 hover:bg-muted/30 group">
                         <td className="px-3 py-2 text-xs whitespace-nowrap">
                           {new Date(w.withdrawnAt).toLocaleDateString()}
                         </td>
+                        <td className="px-3 py-2 text-xs">
+                          {order ? <span className="font-medium">{order.packageName}</span> : <span className="opacity-40">— (đã xóa)</span>}
+                        </td>
+                        <td className="px-3 py-2 text-xs whitespace-nowrap">
+                          {w.installment != null ? (
+                            <span className="inline-flex items-center rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 text-[10px] font-semibold">
+                              Đợt {w.installment}
+                              {order && order.paymentSplits[w.installment - 1] != null && (
+                                <span className="ml-1 opacity-70">({order.paymentSplits[w.installment - 1]}%)</span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] opacity-40 italic">tùy chỉnh</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {partner?.name ?? <span className="opacity-40">—</span>}
+                        </td>
                         <td className="px-3 py-2 text-sm font-semibold whitespace-nowrap text-purple-600 dark:text-purple-400">
                           {formatMoney(w.amount, w.currency)}
                         </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground italic max-w-[400px] truncate" title={w.notes ?? ""}>
+                        <td className="px-3 py-2 text-xs text-muted-foreground italic max-w-[300px] truncate" title={w.notes ?? ""}>
                           {w.notes || <span className="opacity-40">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right">
@@ -833,7 +1141,8 @@ export default function OrdersPage() {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

@@ -10,6 +10,8 @@ const TABLE = "os_withdrawals";
 
 export interface OsWithdrawal {
   id: string;
+  orderId: string | null;
+  installment: number | null; // 1-based index into order's payment_splits, or null for ad-hoc
   withdrawnAt: string;
   amount: number;
   currency: OrderCurrency;
@@ -19,6 +21,8 @@ export interface OsWithdrawal {
 
 interface DbRow {
   id: string;
+  order_id: string | null;
+  installment: number | null;
   withdrawn_at: string;
   amount: number;
   currency: string;
@@ -31,6 +35,8 @@ function rowToEntry(r: DbRow): OsWithdrawal {
   const currency: OrderCurrency = (["USD", "VND", "USDT"].includes(cur) ? cur : "USD") as OrderCurrency;
   return {
     id: r.id,
+    orderId: r.order_id,
+    installment: r.installment,
     withdrawnAt: r.withdrawn_at,
     amount: Number(r.amount),
     currency,
@@ -50,18 +56,22 @@ export async function readAll(): Promise<OsWithdrawal[]> {
 }
 
 export interface AddInput {
+  orderId: string;
+  installment?: number | null;
   withdrawnAt: string;
   amount: number;
-  currency?: OrderCurrency;
+  currency: OrderCurrency;
   notes?: string | null;
 }
 
 export async function addEntry(input: AddInput): Promise<OsWithdrawal> {
   const sb = supabase();
   const { data, error } = await sb.from(TABLE).insert({
+    order_id: input.orderId,
+    installment: input.installment ?? null,
     withdrawn_at: input.withdrawnAt,
     amount: input.amount,
-    currency: input.currency ?? "USD",
+    currency: input.currency,
     notes: input.notes ?? null,
   }).select().single();
   if (error) throw new Error(error.message);
@@ -71,7 +81,7 @@ export async function addEntry(input: AddInput): Promise<OsWithdrawal> {
 export interface UpdateInput {
   withdrawnAt?: string;
   amount?: number;
-  currency?: OrderCurrency;
+  installment?: number | null;
   notes?: string | null;
 }
 
@@ -80,7 +90,7 @@ export async function updateEntry(id: string, patch: UpdateInput): Promise<void>
   const updates: Record<string, unknown> = {};
   if (patch.withdrawnAt !== undefined) updates.withdrawn_at = patch.withdrawnAt;
   if (patch.amount !== undefined) updates.amount = patch.amount;
-  if (patch.currency !== undefined) updates.currency = patch.currency;
+  if (patch.installment !== undefined) updates.installment = patch.installment;
   if (patch.notes !== undefined) updates.notes = patch.notes;
   if (Object.keys(updates).length === 0) return;
   const { error } = await sb.from(TABLE).update(updates).eq("id", id);

@@ -152,6 +152,15 @@ create table if not exists os_withdrawals (
 
 create index if not exists os_withdrawals_date_idx on os_withdrawals (withdrawn_at desc);
 
+-- Link each withdrawal to a specific order (cascade delete) — currency
+-- inherits from the order at insert time.
+alter table os_withdrawals add column if not exists order_id uuid references os_orders(id) on delete cascade;
+create index if not exists os_withdrawals_order_idx on os_withdrawals (order_id);
+
+-- Track which installment (đợt thanh toán) of the order this withdrawal corresponds to.
+-- 1-based index into os_orders.payment_splits[]. NULL means "ad-hoc / không gắn đợt".
+alter table os_withdrawals add column if not exists installment integer;
+
 -- Seed default blacklist (idempotent — re-run safe)
 insert into ref_blacklist (domain, note) values
   ('za.com',             'marketplace/parking'),
