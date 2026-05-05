@@ -16,7 +16,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Partner } from "@/lib/os-partners-db";
-import type { Order } from "@/lib/os-orders-db";
+import type { Order, OrderCurrency } from "@/lib/os-orders-db";
+import { ORDER_CURRENCIES } from "@/lib/os-orders-db";
+
+function formatMoney(amount: number, currency: OrderCurrency): string {
+  if (currency === "USD") return `$${amount.toFixed(2)}`;
+  if (currency === "VND") return `${Math.round(amount).toLocaleString("vi-VN")} ₫`;
+  if (currency === "USDT") return `${amount.toFixed(2)} USDT`;
+  return `${amount} ${currency}`;
+}
 
 interface ToastItem { id: number; message: string; isError: boolean }
 
@@ -43,6 +51,7 @@ export default function OrdersPage() {
   const [oPackage, setOPackage] = useState("");
   const [oPrice, setOPrice] = useState("");
   const [oRevenueOverride, setORevenueOverride] = useState<string>(""); // optional override
+  const [oCurrency, setOCurrency] = useState<OrderCurrency>("USD");
   const [oPaymentCount, setOPaymentCount] = useState(1);
   const [oSplits, setOSplits] = useState<string[]>(["100"]);
   const [oNotes, setONotes] = useState("");
@@ -108,6 +117,7 @@ export default function OrdersPage() {
     setOPackage("");
     setOPrice("");
     setORevenueOverride("");
+    setOCurrency("USD");
     setOPaymentCount(1);
     setOSplits(["100"]);
     setONotes("");
@@ -120,6 +130,7 @@ export default function OrdersPage() {
     setOPackage(o.packageName);
     setOPrice(String(o.price));
     setORevenueOverride(String(o.revenue));
+    setOCurrency(o.currency);
     setOPaymentCount(o.paymentCount);
     setOSplits(o.paymentSplits.map(String));
     setONotes(o.notes ?? "");
@@ -156,6 +167,7 @@ export default function OrdersPage() {
         packageName: oPackage.trim(),
         price,
         revenue: effectiveRevenue,
+        currency: oCurrency,
         paymentSplits: splits,
         notes: oNotes.trim() || null,
       };
@@ -173,6 +185,7 @@ export default function OrdersPage() {
           packageName: payload.packageName,
           price: payload.price,
           revenue: payload.revenue,
+          currency: payload.currency,
           paymentCount: payload.paymentSplits.length,
           paymentSplits: payload.paymentSplits,
           notes: payload.notes,
@@ -196,7 +209,7 @@ export default function OrdersPage() {
     } finally {
       setSaving(false);
     }
-  }, [oPackage, oPrice, oSplits, oPartnerId, effectiveRevenue, oNotes, editingId, showToast]);
+  }, [oPackage, oPrice, oSplits, oPartnerId, effectiveRevenue, oCurrency, oNotes, editingId, showToast]);
 
   const remove = useCallback(async (o: Order) => {
     if (!confirm(`Xóa đơn hàng "${o.packageName}"?`)) return;
@@ -209,16 +222,21 @@ export default function OrdersPage() {
     }
   }, [showToast]);
 
-  // Stats
+  // Stats grouped by currency (mixing currencies in one sum is misleading)
   const totals = useMemo(() => {
-    let totalPrice = 0;
-    let totalRevenue = 0;
+    const byCurrency: Record<string, { price: number; revenue: number }> = {};
     for (const o of orders) {
-      totalPrice += o.price;
-      totalRevenue += o.revenue;
+      if (!byCurrency[o.currency]) byCurrency[o.currency] = { price: 0, revenue: 0 };
+      byCurrency[o.currency].price += o.price;
+      byCurrency[o.currency].revenue += o.revenue;
     }
-    return { totalPrice, totalRevenue };
+    return byCurrency;
   }, [orders]);
+
+  const totalEntries = useMemo(
+    () => Object.entries(totals) as [OrderCurrency, { price: number; revenue: number }][],
+    [totals]
+  );
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -236,18 +254,36 @@ export default function OrdersPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng đơn</p>
           <p className="text-2xl font-bold">{orders.length}</p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng giá trị</p>
-          <p className="text-2xl font-bold">${totals.totalPrice.toFixed(2)}</p>
+          {totalEntries.length === 0 ? (
+            <p className="text-2xl font-bold">—</p>
+          ) : (
+            <div className="space-y-0.5">
+              {totalEntries.map(([cur, t]) => (
+                <p key={cur} className="text-lg font-bold leading-tight">{formatMoney(t.price, cur)}</p>
+              ))}
+            </div>
+          )}
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng doanh thu</p>
-          <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">${totals.totalRevenue.toFixed(2)}</p>
+          {totalEntries.length === 0 ? (
+            <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">—</p>
+          ) : (
+            <div className="space-y-0.5">
+              {totalEntries.map(([cur, t]) => (
+                <p key={cur} className="text-lg font-bold leading-tight text-emerald-600 dark:text-emerald-400">
+                  {formatMoney(t.revenue, cur)}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -291,7 +327,19 @@ export default function OrdersPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Đơn vị *</label>
+              <select
+                value={oCurrency}
+                onChange={(e) => setOCurrency(e.target.value as OrderCurrency)}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
+              >
+                {ORDER_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Giá tiền *</label>
               <Input type="number" step="0.01" value={oPrice} onChange={(e) => setOPrice(e.target.value)} placeholder="0.00" />
@@ -301,7 +349,7 @@ export default function OrdersPage() {
                 Doanh thu
                 {selectedPartner && (
                   <span className="ml-1 text-muted-foreground">
-                    (auto: ${computedRevenue.toFixed(2)} = {selectedPartner.discountPercent}%)
+                    (auto: {formatMoney(computedRevenue, oCurrency)} = {selectedPartner.discountPercent}%)
                   </span>
                 )}
               </label>
@@ -356,7 +404,7 @@ export default function OrdersPage() {
                       <span className="text-xs text-muted-foreground">%</span>
                     </div>
                     <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
-                      = ${installmentRev.toFixed(2)}
+                      = {formatMoney(installmentRev, oCurrency)}
                     </p>
                   </div>
                 );
@@ -445,18 +493,18 @@ export default function OrdersPage() {
                           </details>
                         )}
                       </td>
-                      <td className="px-3 py-2 font-semibold">${o.price.toFixed(2)}</td>
-                      <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400">${o.revenue.toFixed(2)}</td>
+                      <td className="px-3 py-2 font-semibold whitespace-nowrap">{formatMoney(o.price, o.currency)}</td>
+                      <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">{formatMoney(o.revenue, o.currency)}</td>
                       <td className="px-3 py-2">
                         <p className="text-xs font-medium">{o.paymentCount} đợt</p>
-                        <div className="flex flex-wrap gap-1 mt-1 max-w-[280px]">
+                        <div className="flex flex-wrap gap-1 mt-1 max-w-[320px]">
                           {o.paymentSplits.map((pct, i) => (
                             <span
                               key={i}
                               className="inline-flex items-center rounded border border-border bg-muted/30 px-1.5 py-0.5 text-[10px]"
-                              title={`Đợt ${i + 1}: ${pct}% = $${(o.revenue * pct / 100).toFixed(2)}`}
+                              title={`Đợt ${i + 1}: ${pct}% = ${formatMoney(o.revenue * pct / 100, o.currency)}`}
                             >
-                              {pct}% (${(o.revenue * pct / 100).toFixed(2)})
+                              {pct}% ({formatMoney(o.revenue * pct / 100, o.currency)})
                             </span>
                           ))}
                         </div>

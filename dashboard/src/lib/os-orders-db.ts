@@ -10,12 +10,17 @@ import { supabase } from "./supabase";
 
 const TABLE = "os_orders";
 
+export type OrderCurrency = "USD" | "VND" | "USDT";
+
+export const ORDER_CURRENCIES: OrderCurrency[] = ["USD", "VND", "USDT"];
+
 export interface Order {
   id: string;
   partnerId: string | null;
   packageName: string;
   price: number;
   revenue: number;
+  currency: OrderCurrency;
   paymentCount: number;
   paymentSplits: number[];
   notes: string | null;
@@ -29,6 +34,7 @@ interface DbRow {
   package_name: string;
   price: number;
   revenue: number;
+  currency: string;
   payment_count: number;
   payment_splits: number[];
   notes: string | null;
@@ -37,12 +43,15 @@ interface DbRow {
 }
 
 function rowToEntry(r: DbRow): Order {
+  const cur = (r.currency || "USD").toUpperCase();
+  const currency: OrderCurrency = (ORDER_CURRENCIES as readonly string[]).includes(cur) ? (cur as OrderCurrency) : "USD";
   return {
     id: r.id,
     partnerId: r.partner_id,
     packageName: r.package_name,
     price: Number(r.price),
     revenue: Number(r.revenue),
+    currency,
     paymentCount: r.payment_count,
     paymentSplits: Array.isArray(r.payment_splits) ? r.payment_splits.map((n) => Number(n)) : [],
     notes: r.notes,
@@ -66,6 +75,7 @@ export interface AddInput {
   packageName: string;
   price: number;
   revenue: number;
+  currency?: OrderCurrency;
   paymentSplits: number[];
   notes?: string | null;
 }
@@ -77,6 +87,7 @@ export async function addEntry(input: AddInput): Promise<Order> {
     package_name: input.packageName.trim(),
     price: input.price,
     revenue: input.revenue,
+    currency: input.currency ?? "USD",
     payment_count: input.paymentSplits.length,
     payment_splits: input.paymentSplits,
     notes: input.notes?.trim() || null,
@@ -90,6 +101,7 @@ export interface UpdateInput {
   packageName?: string;
   price?: number;
   revenue?: number;
+  currency?: OrderCurrency;
   paymentSplits?: number[];
   notes?: string | null;
 }
@@ -101,6 +113,7 @@ export async function updateEntry(id: string, patch: UpdateInput): Promise<void>
   if (patch.packageName !== undefined) updates.package_name = patch.packageName.trim();
   if (patch.price !== undefined) updates.price = patch.price;
   if (patch.revenue !== undefined) updates.revenue = patch.revenue;
+  if (patch.currency !== undefined) updates.currency = patch.currency;
   if (patch.paymentSplits !== undefined) {
     updates.payment_splits = patch.paymentSplits;
     updates.payment_count = patch.paymentSplits.length;

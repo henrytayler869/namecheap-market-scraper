@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateEntry, deleteEntry, UpdateInput } from "@/lib/os-orders-db";
+import { updateEntry, deleteEntry, UpdateInput, ORDER_CURRENCIES } from "@/lib/os-orders-db";
 
 export async function PATCH(
   request: NextRequest,
@@ -8,6 +8,12 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await request.json() as UpdateInput;
+    if (body.currency !== undefined && !ORDER_CURRENCIES.includes(body.currency)) {
+      return NextResponse.json(
+        { error: `currency phải là một trong: ${ORDER_CURRENCIES.join(", ")}` },
+        { status: 400 }
+      );
+    }
     if (body.paymentSplits !== undefined) {
       if (!Array.isArray(body.paymentSplits) || body.paymentSplits.length === 0) {
         return NextResponse.json({ error: "paymentSplits không hợp lệ" }, { status: 400 });

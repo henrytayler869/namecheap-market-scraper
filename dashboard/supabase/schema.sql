@@ -136,6 +136,10 @@ create table if not exists os_orders (
 create index if not exists os_orders_partner_idx on os_orders (partner_id);
 create index if not exists os_orders_created_idx on os_orders (created_at desc);
 
+-- Currency (idempotent migration). Allowed: USD / VND / USDT (no DB constraint —
+-- enforced at API level).
+alter table os_orders add column if not exists currency text not null default 'USD';
+
 -- Seed default blacklist (idempotent — re-run safe)
 insert into ref_blacklist (domain, note) values
   ('za.com',             'marketplace/parking'),

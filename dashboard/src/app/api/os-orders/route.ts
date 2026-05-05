@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readAll, addEntry, AddInput } from "@/lib/os-orders-db";
+import { readAll, addEntry, AddInput, ORDER_CURRENCIES } from "@/lib/os-orders-db";
 
 export async function GET() {
   try {
@@ -32,6 +32,12 @@ export async function POST(request: NextRequest) {
     if (Math.abs(total - 100) > 0.01) {
       return NextResponse.json(
         { error: `Tổng % thanh toán phải = 100 (hiện tại: ${total})` },
+        { status: 400 }
+      );
+    }
+    if (body.currency !== undefined && !ORDER_CURRENCIES.includes(body.currency)) {
+      return NextResponse.json(
+        { error: `currency phải là một trong: ${ORDER_CURRENCIES.join(", ")}` },
         { status: 400 }
       );
     }
