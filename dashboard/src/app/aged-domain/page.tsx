@@ -16,8 +16,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
-  Copy,
-  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,8 +24,6 @@ import { cn } from "@/lib/utils";
 import type { DomainResult } from "@/app/api/aged-domain/analyze/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type Mode = "dataforseo" | "ahrefs";
 
 interface DbEntry {
   domain: string;
@@ -45,10 +41,7 @@ type V1SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
-  // ── Mode ─────────────────────────────────────────────────────────────────────
-  const [mode, setMode] = useState<Mode>("dataforseo");
-
-  // ── Form inputs (shared) ─────────────────────────────────────────────────────
+  // ── Form inputs ──────────────────────────────────────────────────────────────
   const [domainsText, setDomainsText] = useState("");
   const [minDr, setMinDr] = useState(30);
   const [limitPerDomain, setLimitPerDomain] = useState(100);
@@ -60,8 +53,6 @@ export default function AgedDomainPage() {
   const [v1Cost, setV1Cost] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Ahrefs mode: copy-prompt helper ─────────────────────────────────────────
-  const [copied, setCopied] = useState(false);
   // ── Sort & expand ────────────────────────────────────────────────────────────
   const [v1SortKey, setV1SortKey] = useState<V1SortKey>("dbMatches");
   const [v1SortDir, setV1SortDir] = useState<1 | -1>(-1);
@@ -88,14 +79,6 @@ export default function AgedDomainPage() {
     setToasts((p) => [...p, { id, message, isError }]);
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
   }, []);
-
-  // ─── Mode switch ──────────────────────────────────────────────────────────────
-
-  const switchMode = (m: Mode) => {
-    setMode(m);
-    setExpandedRows(new Set());
-    setError(null);
-  };
 
   // ─── Backlink DB ──────────────────────────────────────────────────────────────
 
@@ -164,56 +147,6 @@ export default function AgedDomainPage() {
     }
   }, [domainsText, minDr, limitPerDomain]);
 
-  // ─── Copy prompt for Claude (V2 — Ahrefs via MCP) ───────────────────────────
-
-  const copyAhrefsPrompt = useCallback(() => {
-    const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
-    if (!domains.length) return;
-    const prompt =
-      `Phân tích Aged Domain bằng Ahrefs MCP + đánh giá chất lượng anchor.\n` +
-      `Cấu hình: DR tối thiểu = ${minDr}, limit = ${limitPerDomain} ref domains/target.\n` +
-      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n` +
-      `\n` +
-      `Yêu cầu:\n` +
-      `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${minDr}, sắp xếp theo domain_rating desc, limit ${limitPerDomain}.\n` +
-      `2. Gọi thêm site-explorer-anchors hoặc xem top anchors để đánh giá chất lượng:\n` +
-      `   - ✅ TỐT — niche-relevant, anchor sạch, brand thật\n` +
-      `   - ⚠️ TRUNG BÌNH — có gì đó risky nhưng salvageable (real brand + minor spam)\n` +
-      `   - ⚠️ RỦI RO — mixed signals, cần review kỹ\n` +
-      `   - ❌ XẤU — bị abuse: gambling/porn/pharmacy/PBN/hacked\n` +
-      `   - ❌ RẤT XẤU — drug/phishing/malware/black SEO marketplace\n` +
-      `3. Output ra CSV với header và format chính xác như sau:\n` +
-      `\n` +
-      `target_domain,checked_at,refs,rating,category,detail\n` +
-      `\n` +
-      `Trong đó:\n` +
-      `- target_domain: domain đang phân tích (lowercase)\n` +
-      `- checked_at: ISO timestamp khi check (vd: 2026-04-30T10:00:00Z)\n` +
-      `- refs: list ref domains kèm DR, ngăn cách bằng dấu chấm phẩy. Format: "domain1.com (DR 92); domain2.com (DR 91); ..."\n` +
-      `- rating: một trong [✅ TỐT, ⚠️ TRUNG BÌNH, ⚠️ RỦI RO, ❌ XẤU, ❌ RẤT XẤU]\n` +
-      `- category: phân loại ngắn gọn (vd: "Spam Indonesian gambling", "Sạch - Health niche", "Hacked - Russian pharmacy")\n` +
-      `- detail: mô tả chi tiết evidence (top anchors, brand info, multilingual hints, ...)\n` +
-      `\n` +
-      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`;
-    // Try modern clipboard API, fall back to execCommand for non-HTTPS / restricted contexts
-    const doCopy = async () => {
-      try {
-        await navigator.clipboard.writeText(prompt);
-      } catch {
-        const el = document.createElement("textarea");
-        el.value = prompt;
-        el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
-        document.body.appendChild(el);
-        el.focus();
-        el.select();
-        document.execCommand("copy");
-        document.body.removeChild(el);
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    };
-    doCopy();
-  }, [domainsText, minDr, limitPerDomain]);
 
   const handleAnalyze = analyzeV1;
 
@@ -284,52 +217,23 @@ export default function AgedDomainPage() {
         </p>
       </div>
 
-      {/* ── DB empty warning (Option 1 only) ──────────────────────────────────── */}
-      {mode === "dataforseo" && dbEntries.length === 0 && (
+      {/* ── DB empty warning ────────────────────────────────────────────────── */}
+      {dbEntries.length === 0 && (
         <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
           <Info className="h-4 w-4 mt-0.5 shrink-0" />
           <span>
             <strong>Backlink DB đang trống.</strong>{" "}
-            Option 1 cần DB để tra cứu DR. Hãy thêm domain tham chiếu (Domain + DR) vào DB,
-            hoặc chuyển sang <strong>Option 2: Ahrefs</strong> để lấy DR trực tiếp.
+            DataforSEO cần DB để tra cứu DR. Hãy thêm domain tham chiếu (Domain + DR) vào DB,
+            hoặc dùng <strong>Domain Picker</strong> với Ahrefs MCP để lấy DR trực tiếp.
           </span>
         </div>
       )}
 
       {/* ── Config card ────────────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card p-5 shadow-sm">
-
-        {/* Mode toggle */}
-        <div className="flex gap-1 p-1 bg-muted rounded-lg mb-5 w-fit">
-          <button
-            onClick={() => switchMode("dataforseo")}
-            className={cn(
-              "px-4 py-1.5 rounded-md text-sm font-medium transition-colors",
-              mode === "dataforseo"
-                ? "bg-background shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Option 1: DataforSEO
-          </button>
-          <button
-            onClick={() => switchMode("ahrefs")}
-            className={cn(
-              "px-4 py-1.5 rounded-md text-sm font-medium transition-colors",
-              mode === "ahrefs"
-                ? "bg-background shadow-sm text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Option 2: Ahrefs
-          </button>
-        </div>
-
-        {/* Mode description */}
-        <p className="text-xs text-muted-foreground mb-4 -mt-2">
-          {mode === "dataforseo"
-            ? "DataforSEO → danh sách Referring Domains → đối chiếu Backlink DB để lấy DR → lọc"
-            : "Ahrefs → Referring Domains kèm DR trực tiếp → lọc → có thể lưu vào Backlink DB"}
+        <p className="text-xs text-muted-foreground mb-4">
+          DataforSEO → danh sách Referring Domains → đối chiếu Backlink DB để lấy DR → lọc.
+          (Option Ahrefs đã chuyển sang <strong>Domain Picker</strong>.)
         </p>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
@@ -349,7 +253,7 @@ export default function AgedDomainPage() {
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
-              {mode === "dataforseo" ? "DB Matches" : "Qualified Refs"} tối thiểu
+              DB Matches tối thiểu
               <span className="ml-1 text-muted-foreground/60">(0 = tất cả)</span>
             </label>
             <Input type="number" min={0} value={minQualified}
@@ -357,24 +261,12 @@ export default function AgedDomainPage() {
           </div>
           <div className="flex flex-col justify-end">
             <p className="text-xs text-muted-foreground mb-1">
-              {domainCount} domain{mode === "dataforseo" && ` · DB: ${dbEntries.length} entries`}
+              {domainCount} domain · DB: {dbEntries.length} entries
             </p>
-            {mode === "dataforseo" ? (
-              <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                {loading ? "Đang phân tích..." : "Phân tích"}
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                onClick={copyAhrefsPrompt}
-                disabled={!domainCount}
-                className="gap-2 w-full"
-              >
-                {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                {copied ? "Đã copy!" : "Copy prompt"}
-              </Button>
-            )}
+            <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              {loading ? "Đang phân tích..." : "Phân tích"}
+            </Button>
           </div>
         </div>
 
@@ -402,8 +294,8 @@ export default function AgedDomainPage() {
         </div>
       )}
 
-      {/* ── Results: Option 1 (DataforSEO) ─────────────────────────────────────── */}
-      {mode === "dataforseo" && v1Results !== null && (
+      {/* ── Results ────────────────────────────────────────────────────────────── */}
+      {v1Results !== null && (
         <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
           {/* Header bar */}
           <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
@@ -532,43 +424,6 @@ export default function AgedDomainPage() {
                 )}
               </tbody>
             </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── Option 2: Ahrefs via Claude MCP ────────────────────────────────────── */}
-      {mode === "ahrefs" && (
-        <div className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-orange-200 dark:border-orange-800 flex items-center gap-3">
-            <Info className="h-4 w-4 text-orange-500 shrink-0" />
-            <p className="text-sm font-medium text-orange-700 dark:text-orange-300">
-              Option 2 dùng Ahrefs MCP — phân tích qua Claude AI
-            </p>
-          </div>
-          <div className="px-5 py-4 space-y-3 text-sm text-orange-700 dark:text-orange-300">
-            <p>
-              Ahrefs MCP chạy trong context của Claude AI, không thể gọi trực tiếp từ dashboard.
-              Quy trình sử dụng:
-            </p>
-            <ol className="list-decimal list-inside space-y-1.5 text-sm">
-              <li>Nhập danh sách domain và cấu hình ở trên</li>
-              <li>Nhấn <strong>Copy prompt</strong> để sao chép yêu cầu phân tích</li>
-              <li>Paste vào cửa sổ chat với Claude</li>
-              <li>Claude sẽ dùng Ahrefs MCP để phân tích và tự động lưu kết quả vào Backlink DB</li>
-            </ol>
-            {domainCount > 0 && (
-              <div className="pt-1">
-                <Button
-                  variant="outline"
-                  onClick={copyAhrefsPrompt}
-                  disabled={!domainCount}
-                  className="gap-2 border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/50"
-                >
-                  {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                  {copied ? "Đã copy!" : `Copy prompt (${domainCount} domain, DR≥${minDr})`}
-                </Button>
-              </div>
-            )}
           </div>
         </div>
       )}

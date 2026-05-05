@@ -133,6 +133,12 @@ export default function DomainPickerPage() {
   // ── Export helpers ──────────────────────────────────────────────────────────
   const [copiedDomains, setCopiedDomains] = useState(false);
 
+  // Ahrefs prompt generator
+  const [ahrefsPromptOpen, setAhrefsPromptOpen] = useState(false);
+  const [ahrefsPromptDr, setAhrefsPromptDr] = useState(90);
+  const [ahrefsPromptLimit, setAhrefsPromptLimit] = useState(100);
+  const [copiedAhrefsPrompt, setCopiedAhrefsPrompt] = useState(false);
+
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -695,6 +701,53 @@ export default function DomainPickerPage() {
     showToast(`✅ Đã copy ${displayedRows.length} domain`);
   }, [displayedRows, showToast]);
 
+  const copyAhrefsPrompt = useCallback(async () => {
+    const domains = displayedRows.map((r) => r.domain);
+    if (!domains.length) return;
+    const dr = ahrefsPromptDr;
+    const limit = ahrefsPromptLimit;
+    const prompt =
+      `Phân tích Aged Domain bằng Ahrefs MCP + đánh giá chất lượng anchor.\n` +
+      `Cấu hình: DR tối thiểu = ${dr}, limit = ${limit} ref domains/target.\n` +
+      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n` +
+      `\n` +
+      `Yêu cầu:\n` +
+      `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${dr}, sắp xếp theo domain_rating desc, limit ${limit}.\n` +
+      `2. Gọi thêm site-explorer-anchors hoặc xem top anchors để đánh giá chất lượng:\n` +
+      `   - ✅ TỐT — niche-relevant, anchor sạch, brand thật\n` +
+      `   - ⚠️ TRUNG BÌNH — có gì đó risky nhưng salvageable (real brand + minor spam)\n` +
+      `   - ⚠️ RỦI RO — mixed signals, cần review kỹ\n` +
+      `   - ❌ XẤU — bị abuse: gambling/porn/pharmacy/PBN/hacked\n` +
+      `   - ❌ RẤT XẤU — drug/phishing/malware/black SEO marketplace\n` +
+      `3. Output ra CSV với header và format chính xác như sau:\n` +
+      `\n` +
+      `target_domain,checked_at,refs,rating,category,detail\n` +
+      `\n` +
+      `Trong đó:\n` +
+      `- target_domain: domain đang phân tích (lowercase)\n` +
+      `- checked_at: ISO timestamp khi check (vd: 2026-04-30T10:00:00Z)\n` +
+      `- refs: list ref domains kèm DR, ngăn cách bằng dấu chấm phẩy. Format: "domain1.com (DR 92); domain2.com (DR 91); ..."\n` +
+      `- rating: một trong [✅ TỐT, ⚠️ TRUNG BÌNH, ⚠️ RỦI RO, ❌ XẤU, ❌ RẤT XẤU]\n` +
+      `- category: phân loại ngắn gọn (vd: "Spam Indonesian gambling", "Sạch - Health niche", "Hacked - Russian pharmacy")\n` +
+      `- detail: mô tả chi tiết evidence (top anchors, brand info, multilingual hints, ...)\n` +
+      `\n` +
+      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`;
+    try {
+      await navigator.clipboard.writeText(prompt);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = prompt;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el);
+      el.focus(); el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    setCopiedAhrefsPrompt(true);
+    setTimeout(() => setCopiedAhrefsPrompt(false), 2000);
+    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${dr}, limit ${limit})`);
+  }, [displayedRows, ahrefsPromptDr, ahrefsPromptLimit, showToast]);
+
   const exportCsv = useCallback(() => {
     if (!displayedRows.length) return;
     const headers = [
@@ -926,8 +979,63 @@ export default function DomainPickerPage() {
                 <Download className="h-3.5 w-3.5" />
                 Export CSV
               </Button>
+              <Button
+                size="sm"
+                className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+                onClick={() => setAhrefsPromptOpen((o) => !o)}
+                disabled={!displayedRows.length}
+                title="Copy prompt phân tích Ahrefs (paste vào Claude AI có MCP)"
+              >
+                <FilterIcon className="h-3.5 w-3.5" />
+                Ahrefs prompt
+                <ChevronDown className={cn("h-3 w-3 transition-transform", ahrefsPromptOpen && "rotate-180")} />
+              </Button>
             </div>
           </div>
+
+          {/* Ahrefs prompt config panel */}
+          {ahrefsPromptOpen && (
+            <div className="border-b border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20 px-5 py-4">
+              <div className="flex items-end gap-3 flex-wrap">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">DR tối thiểu</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={ahrefsPromptDr}
+                    onChange={(e) => setAhrefsPromptDr(Number(e.target.value) || 0)}
+                    className="h-8 w-24 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Limit / target</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={ahrefsPromptLimit}
+                    onChange={(e) => setAhrefsPromptLimit(Number(e.target.value) || 1)}
+                    className="h-8 w-24 text-sm"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+                  onClick={copyAhrefsPrompt}
+                  disabled={!displayedRows.length}
+                >
+                  {copiedAhrefsPrompt
+                    ? <Check className="h-3.5 w-3.5" />
+                    : <Copy className="h-3.5 w-3.5" />}
+                  {copiedAhrefsPrompt ? "Đã copy!" : `Copy prompt (${displayedRows.length} domain, DR≥${ahrefsPromptDr})`}
+                </Button>
+                <p className="text-[11px] text-muted-foreground italic ml-auto">
+                  Dán vào Claude AI có Ahrefs MCP → nhận lại CSV → upload ở panel Ahrefs Result DB phía dưới
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
             <table className="w-full text-sm">
