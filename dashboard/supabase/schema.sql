@@ -140,6 +140,18 @@ create index if not exists os_orders_created_idx on os_orders (created_at desc);
 -- enforced at API level).
 alter table os_orders add column if not exists currency text not null default 'USD';
 
+-- ─── OS Service: Withdrawals (rút doanh thu từ orders) ──────────────────────
+create table if not exists os_withdrawals (
+  id            uuid primary key default gen_random_uuid(),
+  withdrawn_at  timestamptz not null,
+  amount        numeric(12, 2) not null,
+  currency      text not null default 'USD',
+  notes         text,
+  created_at    timestamptz default now()
+);
+
+create index if not exists os_withdrawals_date_idx on os_withdrawals (withdrawn_at desc);
+
 -- Seed default blacklist (idempotent — re-run safe)
 insert into ref_blacklist (domain, note) values
   ('za.com',             'marketplace/parking'),

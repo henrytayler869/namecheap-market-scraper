@@ -11,6 +11,8 @@ import {
   Loader2,
   Search,
   AlertCircle,
+  Wallet,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +20,7 @@ import { cn } from "@/lib/utils";
 import type { Partner } from "@/lib/os-partners-db";
 import type { Order, OrderCurrency } from "@/lib/os-orders-db";
 import { ORDER_CURRENCIES } from "@/lib/os-orders-db";
+import type { OsWithdrawal } from "@/lib/os-withdrawal-db";
 
 // Locale: en-US convention — "," thousand separator, "." decimal
 function formatMoney(amount: number, currency: OrderCurrency): string {
@@ -83,6 +86,17 @@ export default function OrdersPage() {
   const [oNotes, setONotes] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Withdrawals
+  const [withdrawals, setWithdrawals] = useState<OsWithdrawal[]>([]);
+  const [wFormOpen, setWFormOpen] = useState(false);
+  const [wEditingId, setWEditingId] = useState<string | null>(null);
+  const [wDate, setWDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [wAmount, setWAmount] = useState("");
+  const [wCurrency, setWCurrency] = useState<OrderCurrency>("USD");
+  const [wNotes, setWNotes] = useState("");
+  const [wSaving, setWSaving] = useState(false);
+  const [wListOpen, setWListOpen] = useState(false);
+
   // Toasts
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -95,14 +109,17 @@ export default function OrdersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, oRes] = await Promise.all([
+      const [pRes, oRes, wRes] = await Promise.all([
         fetch("/api/os-partners"),
         fetch("/api/os-orders"),
+        fetch("/api/os-withdrawals"),
       ]);
       const pData = await pRes.json();
       const oData = await oRes.json();
+      const wData = await wRes.json();
       setPartners(Array.isArray(pData) ? pData : []);
       setOrders(Array.isArray(oData) ? oData : []);
+      setWithdrawals(Array.isArray(wData) ? wData : []);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -248,19 +265,104 @@ export default function OrdersPage() {
     }
   }, [showToast]);
 
+  // ─── Withdrawals ─────────────────────────────────────────────────────────────
+
+  const openWithdrawalForm = useCallback(() => {
+    setWEditingId(null);
+    setWDate(new Date().toISOString().slice(0, 10));
+    setWAmount("");
+    // default currency = most common in orders, fallback USD
+    const counts: Record<string, number> = {};
+    for (const o of orders) counts[o.currency] = (counts[o.currency] ?? 0) + 1;
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as OrderCurrency | undefined;
+    setWCurrency(top ?? "USD");
+    setWNotes("");
+    setWFormOpen(true);
+  }, [orders]);
+
+  const openEditWithdrawal = useCallback((w: OsWithdrawal) => {
+    setWEditingId(w.id);
+    setWDate(new Date(w.withdrawnAt).toISOString().slice(0, 10));
+    setWAmount(formatNumberDisplay(String(w.amount)));
+    setWCurrency(w.currency);
+    setWNotes(w.notes ?? "");
+    setWFormOpen(true);
+  }, []);
+
+  const saveWithdrawal = useCallback(async () => {
+    const amount = parseFormattedNumber(wAmount);
+    if (!wDate || isNaN(amount) || amount <= 0) {
+      showToast("❌ Cần nhập ngày + số tiền hợp lệ", true);
+      return;
+    }
+    setWSaving(true);
+    try {
+      const payload = {
+        withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
+        amount,
+        currency: wCurrency,
+        notes: wNotes.trim() || null,
+      };
+      if (wEditingId) {
+        const res = await fetch(`/api/os-withdrawals/${wEditingId}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Lỗi");
+        const id = wEditingId;
+        setWithdrawals((prev) => prev.map((w) => w.id === id ? { ...w, withdrawnAt: payload.withdrawnAt, amount: payload.amount, currency: payload.currency, notes: payload.notes } : w));
+        showToast("✅ Đã cập nhật");
+      } else {
+        const res = await fetch("/api/os-withdrawals", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Lỗi");
+        setWithdrawals((prev) => [data.entry, ...prev]);
+        showToast(`✅ Đã rút ${formatMoney(amount, wCurrency)}`);
+      }
+      setWFormOpen(false);
+      setWEditingId(null);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setWSaving(false);
+    }
+  }, [wDate, wAmount, wCurrency, wNotes, wEditingId, showToast]);
+
+  const deleteWithdrawal = useCallback(async (id: string) => {
+    if (!confirm("Xóa lần rút này?")) return;
+    try {
+      await fetch(`/api/os-withdrawals/${id}`, { method: "DELETE" });
+      setWithdrawals((prev) => prev.filter((w) => w.id !== id));
+      showToast("🗑️ Đã xóa");
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [showToast]);
+
   // Stats grouped by currency (mixing currencies in one sum is misleading)
   const totals = useMemo(() => {
-    const byCurrency: Record<string, { price: number; revenue: number }> = {};
+    const byCurrency: Record<string, { price: number; revenue: number; withdrawn: number; remaining: number }> = {};
     for (const o of orders) {
-      if (!byCurrency[o.currency]) byCurrency[o.currency] = { price: 0, revenue: 0 };
+      if (!byCurrency[o.currency]) byCurrency[o.currency] = { price: 0, revenue: 0, withdrawn: 0, remaining: 0 };
       byCurrency[o.currency].price += o.price;
       byCurrency[o.currency].revenue += o.revenue;
     }
+    for (const w of withdrawals) {
+      if (!byCurrency[w.currency]) byCurrency[w.currency] = { price: 0, revenue: 0, withdrawn: 0, remaining: 0 };
+      byCurrency[w.currency].withdrawn += w.amount;
+    }
+    for (const cur of Object.keys(byCurrency)) {
+      byCurrency[cur].remaining = byCurrency[cur].revenue - byCurrency[cur].withdrawn;
+    }
     return byCurrency;
-  }, [orders]);
+  }, [orders, withdrawals]);
 
   const totalEntries = useMemo(
-    () => Object.entries(totals) as [OrderCurrency, { price: number; revenue: number }][],
+    () => Object.entries(totals) as [OrderCurrency, { price: number; revenue: number; withdrawn: number; remaining: number }][],
     [totals]
   );
 
@@ -273,14 +375,26 @@ export default function OrdersPage() {
             Đơn hàng dịch vụ với phân chia % thanh toán theo từng đợt.
           </p>
         </div>
-        <Button onClick={openCreateForm} size="sm" className="gap-2" disabled={partners.length === 0}>
-          <Plus className="h-4 w-4" />
-          Thêm đơn hàng
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            className="gap-2 bg-purple-600 hover:bg-purple-700 text-white"
+            onClick={openWithdrawalForm}
+            disabled={orders.length === 0}
+            title="Ghi nhận lần rút doanh thu"
+          >
+            <Wallet className="h-4 w-4" />
+            Rút tiền
+          </Button>
+          <Button onClick={openCreateForm} size="sm" className="gap-2" disabled={partners.length === 0}>
+            <Plus className="h-4 w-4" />
+            Thêm đơn hàng
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground uppercase">Tổng đơn</p>
           <p className="text-2xl font-bold">{orders.length}</p>
@@ -298,7 +412,7 @@ export default function OrdersPage() {
           )}
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Tổng doanh thu</p>
+          <p className="text-xs text-muted-foreground uppercase">Doanh thu</p>
           {totalEntries.length === 0 ? (
             <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">—</p>
           ) : (
@@ -306,6 +420,39 @@ export default function OrdersPage() {
               {totalEntries.map(([cur, t]) => (
                 <p key={cur} className="text-lg font-bold leading-tight text-emerald-600 dark:text-emerald-400">
                   {formatMoney(t.revenue, cur)}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Đã rút</p>
+          {totalEntries.length === 0 || totalEntries.every(([, t]) => t.withdrawn === 0) ? (
+            <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">—</p>
+          ) : (
+            <div className="space-y-0.5">
+              {totalEntries.filter(([, t]) => t.withdrawn > 0).map(([cur, t]) => (
+                <p key={cur} className="text-lg font-bold leading-tight text-purple-600 dark:text-purple-400">
+                  {formatMoney(t.withdrawn, cur)}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Còn lại</p>
+          {totalEntries.length === 0 ? (
+            <p className="text-2xl font-bold">—</p>
+          ) : (
+            <div className="space-y-0.5">
+              {totalEntries.map(([cur, t]) => (
+                <p key={cur} className={cn(
+                  "text-lg font-bold leading-tight",
+                  t.remaining > 0 ? "text-blue-600 dark:text-blue-400"
+                  : t.remaining < 0 ? "text-rose-600 dark:text-rose-400"
+                  : "text-muted-foreground"
+                )}>
+                  {formatMoney(t.remaining, cur)}
                 </p>
               ))}
             </div>
@@ -467,6 +614,66 @@ export default function OrdersPage() {
         </div>
       )}
 
+      {/* Withdrawal form */}
+      {wFormOpen && (
+        <div className="rounded-xl border border-purple-300 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-950/30 p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-purple-600" />
+              {wEditingId ? "Sửa lần rút" : "Ghi nhận rút doanh thu"}
+            </h3>
+            <button onClick={() => { setWFormOpen(false); setWEditingId(null); }} className="text-muted-foreground hover:text-foreground">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Ngày</label>
+              <Input type="date" value={wDate} onChange={(e) => setWDate(e.target.value)} className="h-8 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Số tiền</label>
+              <Input
+                type="text"
+                inputMode="decimal"
+                value={wAmount}
+                onChange={(e) => setWAmount(formatNumberDisplay(e.target.value))}
+                placeholder="0"
+                className="h-8 text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Đơn vị</label>
+              <select
+                value={wCurrency}
+                onChange={(e) => setWCurrency(e.target.value as OrderCurrency)}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
+              >
+                {ORDER_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mb-3">
+            <label className="block text-xs font-medium text-muted-foreground mb-1">Ghi chú (optional)</label>
+            <Input value={wNotes} onChange={(e) => setWNotes(e.target.value)} placeholder="vd: chuyển khoản bank ACB" className="h-8 text-sm" />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={saveWithdrawal}
+              disabled={wSaving}
+              className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              {wSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
+              {wSaving ? "Đang lưu..." : (wEditingId ? "Cập nhật" : "Lưu")}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setWFormOpen(false); setWEditingId(null); }}>Hủy</Button>
+          </div>
+        </div>
+      )}
+
       {/* Search */}
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -561,6 +768,76 @@ export default function OrdersPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Withdrawals panel */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <button
+          onClick={() => setWListOpen((o) => !o)}
+          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition rounded-xl"
+        >
+          <div className="flex items-center gap-2 flex-wrap">
+            <Wallet className="h-4 w-4 text-purple-600" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Lịch sử rút doanh thu</h2>
+            <span className="bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 text-xs font-bold px-2 py-0.5 rounded-full">
+              {withdrawals.length} lần
+            </span>
+            {totalEntries.filter(([, t]) => t.withdrawn > 0).map(([cur, t]) => (
+              <span key={cur} className="bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
+                {formatMoney(t.withdrawn, cur)} đã rút
+              </span>
+            ))}
+          </div>
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", wListOpen && "rotate-180")} />
+        </button>
+
+        {wListOpen && (
+          <div className="border-t px-6 pb-6">
+            {withdrawals.length === 0 ? (
+              <p className="text-center py-8 text-sm text-muted-foreground">
+                Chưa có lần rút nào. Click <strong>Rút tiền</strong> ở trên để ghi nhận.
+              </p>
+            ) : (
+              <div className="rounded-lg border overflow-hidden mt-4">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 border-b">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ngày</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Số tiền</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ghi chú</th>
+                      <th className="w-20" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {withdrawals.map((w) => (
+                      <tr key={w.id} className="border-b border-border/30 hover:bg-muted/30 group">
+                        <td className="px-3 py-2 text-xs whitespace-nowrap">
+                          {new Date(w.withdrawnAt).toLocaleDateString()}
+                        </td>
+                        <td className="px-3 py-2 text-sm font-semibold whitespace-nowrap text-purple-600 dark:text-purple-400">
+                          {formatMoney(w.amount, w.currency)}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground italic max-w-[400px] truncate" title={w.notes ?? ""}>
+                          {w.notes || <span className="opacity-40">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition">
+                            <button onClick={() => openEditWithdrawal(w)} className="text-muted-foreground hover:text-primary" title="Sửa">
+                              <Edit2 className="h-3 w-3" />
+                            </button>
+                            <button onClick={() => deleteWithdrawal(w.id)} className="text-destructive hover:opacity-80" title="Xóa">
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </div>
