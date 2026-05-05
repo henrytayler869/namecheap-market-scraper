@@ -19,11 +19,37 @@ import type { Partner } from "@/lib/os-partners-db";
 import type { Order, OrderCurrency } from "@/lib/os-orders-db";
 import { ORDER_CURRENCIES } from "@/lib/os-orders-db";
 
+// Locale: en-US convention — "," thousand separator, "." decimal
 function formatMoney(amount: number, currency: OrderCurrency): string {
-  if (currency === "USD") return `$${amount.toFixed(2)}`;
-  if (currency === "VND") return `${Math.round(amount).toLocaleString("vi-VN")} ₫`;
-  if (currency === "USDT") return `${amount.toFixed(2)} USDT`;
+  const f2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const f0 = (n: number) => Math.round(n).toLocaleString("en-US");
+  if (currency === "USD") return `$${f2(amount)}`;
+  if (currency === "VND") return `${f0(amount)} ₫`;
+  if (currency === "USDT") return `${f2(amount)} USDT`;
   return `${amount} ${currency}`;
+}
+
+// Live-format raw input: insert "," every 3 digits in integer part, allow trailing decimals
+function formatNumberDisplay(raw: string): string {
+  if (!raw) return "";
+  // Keep digits and at most one dot
+  const stripped = raw.replace(/,/g, "").replace(/[^\d.]/g, "");
+  const firstDot = stripped.indexOf(".");
+  const cleaned = firstDot >= 0
+    ? stripped.slice(0, firstDot + 1) + stripped.slice(firstDot + 1).replace(/\./g, "")
+    : stripped;
+  const dotIdx = cleaned.indexOf(".");
+  const intStr = dotIdx >= 0 ? cleaned.slice(0, dotIdx) : cleaned;
+  const decPart = dotIdx >= 0 ? cleaned.slice(dotIdx) : "";
+  if (intStr === "") return decPart; // user typed "." first
+  const intNum = parseInt(intStr, 10);
+  if (isNaN(intNum)) return "";
+  return intNum.toLocaleString("en-US") + decPart;
+}
+
+function parseFormattedNumber(s: string): number {
+  if (!s) return NaN;
+  return parseFloat(s.replace(/,/g, ""));
 }
 
 interface ToastItem { id: number; message: string; isError: boolean }
@@ -102,10 +128,10 @@ export default function OrdersPage() {
   // Auto-compute revenue from selected partner's discount
   const selectedPartner = oPartnerId ? partnerById.get(oPartnerId) : null;
   const computedRevenue = selectedPartner && oPrice
-    ? +((parseFloat(oPrice) || 0) * (selectedPartner.discountPercent / 100)).toFixed(2)
+    ? +(((parseFormattedNumber(oPrice) || 0) * (selectedPartner.discountPercent / 100))).toFixed(2)
     : 0;
   const effectiveRevenue = oRevenueOverride.trim() !== ""
-    ? parseFloat(oRevenueOverride) || 0
+    ? parseFormattedNumber(oRevenueOverride) || 0
     : computedRevenue;
 
   const splitsSum = oSplits.reduce((s, v) => s + (parseFloat(v) || 0), 0);
@@ -128,8 +154,8 @@ export default function OrdersPage() {
     setEditingId(o.id);
     setOPartnerId(o.partnerId ?? "");
     setOPackage(o.packageName);
-    setOPrice(String(o.price));
-    setORevenueOverride(String(o.revenue));
+    setOPrice(formatNumberDisplay(String(o.price)));
+    setORevenueOverride(formatNumberDisplay(String(o.revenue)));
     setOCurrency(o.currency);
     setOPaymentCount(o.paymentCount);
     setOSplits(o.paymentSplits.map(String));
@@ -150,7 +176,7 @@ export default function OrdersPage() {
   };
 
   const save = useCallback(async () => {
-    const price = parseFloat(oPrice);
+    const price = parseFormattedNumber(oPrice);
     if (!oPackage.trim() || isNaN(price)) {
       showToast("❌ Cần nhập tên gói và giá tiền", true);
       return;
@@ -342,7 +368,14 @@ export default function OrdersPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Giá tiền *</label>
-              <Input type="number" step="0.01" value={oPrice} onChange={(e) => setOPrice(e.target.value)} placeholder="0.00" />
+              <Input
+                type="text"
+                inputMode="decimal"
+                value={oPrice}
+                onChange={(e) => setOPrice(formatNumberDisplay(e.target.value))}
+                placeholder="0"
+                className="font-mono"
+              />
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -354,11 +387,12 @@ export default function OrdersPage() {
                 )}
               </label>
               <Input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={oRevenueOverride}
-                onChange={(e) => setORevenueOverride(e.target.value)}
-                placeholder={`Auto: ${computedRevenue.toFixed(2)}`}
+                onChange={(e) => setORevenueOverride(formatNumberDisplay(e.target.value))}
+                placeholder={`Auto: ${formatNumberDisplay(String(computedRevenue))}`}
+                className="font-mono"
               />
             </div>
             <div>
