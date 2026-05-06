@@ -614,21 +614,30 @@ export default function InventoryPage() {
   const exportCsv = useCallback(() => {
     if (!filtered.length) return;
     const headers = ["domain", "ref_domains", "expected_sell_price"];
+    // RFC 4180 — wrap in quotes if needed (chứa quote, comma, newline, hoặc semicolon
+    // vì một số GSheet locale dùng ";" làm field separator).
     const escape = (v: unknown) => {
       const s = String(v ?? "");
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      return /["\,\n\r;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
+    // Force-quote: luôn bọc trong quote để tránh parser nhầm bất kỳ ký tự nào.
+    const forceQuote = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = filtered.map((e) => {
       const refs = refsByDomain.get(e.domain) ?? [];
-      const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join("; ");
+      // Dùng " | " (pipe) thay cho "; " — pipe an toàn hơn vì không phải field
+      // separator của bất kỳ locale nào trong GSheet/Excel.
+      const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ");
       return [
-        e.domain,
-        refsCell,
-        e.expectedSellPrice ?? "",
-      ].map(escape).join(",");
+        escape(e.domain),
+        forceQuote(refsCell),       // luôn quote — refs có thể chứa nhiều ký tự lạ
+        escape(e.expectedSellPrice ?? ""),
+      ].join(",");
     });
-    const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const csv = [headers.join(","), ...rows].join("\r\n");
+    // BOM (﻿) → Excel/GSheet biết là UTF-8.
+    // Dòng đầu "sep=," → ép GSheet/Excel dùng comma làm field separator,
+    // bất kể locale của user (rất quan trọng với GSheet ở VN/EU).
+    const blob = new Blob(["﻿sep=,\r\n" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -636,7 +645,7 @@ export default function InventoryPage() {
     a.download = `domain-inventory-${ts}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [filtered]);
+  }, [filtered, refsByDomain]);
 
   return (
     <div className="flex flex-col gap-6 p-6">
