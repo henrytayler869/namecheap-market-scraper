@@ -607,6 +607,7 @@ export default function InventoryPage() {
     };
     for (const w of withdrawals) {
       if (w.currency !== "USD") continue;
+      if (datePreset !== "all" && !inRange(w.withdrawnAt)) continue;
       const key = w.wallet ?? "none";
       if (w.status === "paid") {
         totalUsdPaid += w.amount;
@@ -617,7 +618,7 @@ export default function InventoryPage() {
       }
     }
     return { totalUsdPaid, totalUsdPending, byWallet };
-  }, [withdrawals]);
+  }, [withdrawals, datePreset, inRange]);
 
   const removeEntry = useCallback(async (domain: string) => {
     if (!confirm(`Xóa ${domain} khỏi kho?`)) return;
