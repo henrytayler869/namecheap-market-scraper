@@ -2,23 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "Namecheap Actor",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["start"],
-      "port": 3000
-    },
-    {
-      "name": "Vitest UI",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vitest", "--ui", "--port", "51204"],
-      "port": 51204
-    },
-    {
       "name": "Dashboard",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "cwd": "dashboard",
-      "port": 3000
+      "port": 3000,
+      "autoPort": true
     }
   ]
 }
