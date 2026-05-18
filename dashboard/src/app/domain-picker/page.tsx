@@ -389,6 +389,8 @@ export default function DomainPickerPage() {
 
   const filteredAhrefs = useMemo(() => {
     const bySearch = ahrefsSummary.filter((t) => {
+      // Manually excluded — domain already bought by someone else, hide entirely
+      if (t.excluded) return false;
       // UI-only hide: skip entries last-checked at-or-before viewClearedAt
       if (viewClearedAt != null) {
         const t0 = new Date(t.checkedAt).getTime();

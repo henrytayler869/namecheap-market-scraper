@@ -8,6 +8,14 @@ import { supabase } from "./supabase";
 const TABLE = "ahrefs_results";
 const ASSESS_TABLE = "target_assessment";
 
+/**
+ * Sentinel ref_domain inserted by the "Loại trừ" action when a target has
+ * been bought by someone else (not acquirable). Stored in ahrefs_results so
+ * the existing checkedTargets set already picks it up, but readTargetSummary
+ * treats it as metadata — not a real ref — and surfaces an `excluded` flag.
+ */
+export const MANUAL_EXCLUDE_MARKER = "__manually_excluded__";
+
 export interface AhrefsResultRow {
   targetDomain: string;
   refDomain: string;
@@ -83,6 +91,8 @@ export interface TargetSummary {
   rating: string | null;
   category: string | null;
   detail: string | null;
+  /** True if a "Loại trừ" marker row exists — domain bought by someone else. */
+  excluded: boolean;
 }
 
 async function readAllAssessments(): Promise<Map<string, AssessmentDbRow>> {
@@ -108,25 +118,37 @@ export async function readTargetSummary(): Promise<TargetSummary[]> {
   // Aggregate client-side from full read — table size expected to be modest (10s of thousands max)
   const [all, assessMap] = await Promise.all([readAll(), readAllAssessments()]);
   const map = new Map<string, TargetSummary>();
-  for (const r of all) {
-    const cur = map.get(r.targetDomain);
+  const ensure = (targetDomain: string, checkedAt: string): TargetSummary => {
+    let cur = map.get(targetDomain);
     if (!cur) {
-      map.set(r.targetDomain, {
-        targetDomain: r.targetDomain,
-        refsCount: 1,
-        maxDr: r.domainRating,
-        checkedAt: r.checkedAt,
-        refs: [{ domain: r.refDomain, dr: r.domainRating }],
+      cur = {
+        targetDomain,
+        refsCount: 0,
+        maxDr: 0,
+        checkedAt,
+        refs: [],
         rating: null,
         category: null,
         detail: null,
-      });
-    } else {
-      cur.refsCount += 1;
-      if (r.domainRating > cur.maxDr) cur.maxDr = r.domainRating;
-      if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
-      cur.refs.push({ domain: r.refDomain, dr: r.domainRating });
+        excluded: false,
+      };
+      map.set(targetDomain, cur);
     }
+    return cur;
+  };
+  for (const r of all) {
+    // Manual-exclude marker is metadata, not a real ref — flag and skip aggregation
+    if (r.refDomain === MANUAL_EXCLUDE_MARKER) {
+      const cur = ensure(r.targetDomain, r.checkedAt);
+      cur.excluded = true;
+      if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
+      continue;
+    }
+    const cur = ensure(r.targetDomain, r.checkedAt);
+    cur.refsCount += 1;
+    if (r.domainRating > cur.maxDr) cur.maxDr = r.domainRating;
+    if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
+    cur.refs.push({ domain: r.refDomain, dr: r.domainRating });
   }
   // Attach assessments
   for (const [domain, summary] of map.entries()) {

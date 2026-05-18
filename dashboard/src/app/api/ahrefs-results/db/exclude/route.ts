@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { upsertRows } from "@/lib/ahrefs-db";
+import { upsertRows, MANUAL_EXCLUDE_MARKER } from "@/lib/ahrefs-db";
 
 /**
  * Mark targets as "manually excluded" — adds them to the Ahrefs checked list
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     }
     const rows = targets.map((t) => ({
       targetDomain: t,
-      refDomain: "__manually_excluded__",
+      refDomain: MANUAL_EXCLUDE_MARKER,
       domainRating: 0,
     }));
     const result = await upsertRows(rows);
