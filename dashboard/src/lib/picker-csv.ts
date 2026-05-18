@@ -33,7 +33,7 @@ export const DEFAULT_THRESHOLDS: PickerThresholds = {
   szDropsMax: 3,
 };
 
-export type PresetName = "conservative" | "balanced" | "aggressive" | "custom";
+export type PresetName = "conservative" | "balanced" | "aggressive" | "none" | "custom";
 
 export const THRESHOLD_PRESETS: Record<Exclude<PresetName, "custom">, PickerThresholds> = {
   conservative: {
@@ -55,12 +55,24 @@ export const THRESHOLD_PRESETS: Record<Exclude<PresetName, "custom">, PickerThre
     szScoreMin: 10,
     szDropsMax: 5,
   },
+  // Pass-through: all rows qualify. MAX_SAFE_INTEGER keeps JSON round-trip clean
+  // (Infinity would serialize to null in localStorage snapshots).
+  none: {
+    tfMin: 0,
+    cfMin: 0,
+    rdMin: 0,
+    daMin: 0,
+    ageMin: 0,
+    szScoreMin: 0,
+    szDropsMax: Number.MAX_SAFE_INTEGER,
+  },
 };
 
 export const PRESET_LABELS: Record<Exclude<PresetName, "custom">, string> = {
   conservative: "Bảo thủ",
   balanced: "Cân bằng",
   aggressive: "Hung hăng",
+  none: "Không lọc",
 };
 
 /** Reverse-lookup: given a threshold object, find a matching preset (or 'custom'). */
@@ -398,21 +410,27 @@ export function parseUnifiedCsv(text: string): UnifiedCsvRow[] {
   return out;
 }
 
-// Parse "domain1 (DR 92); domain2 (DR 91); ..." → [{domain, dr}, ...]
+// Parse refs cell into [{domain, dr}, ...]. Tolerates several formats AI tooling emits:
+//   "domain.com (DR 92); domain.com (DR 91)"
+//   "[domain.com](http://domain.com) (DR 92, spam); ..."   ← markdown links
+//   "domain.com DR 92; ..."
 export function parseRefsCell(cell: string): { domain: string; dr: number }[] {
   if (!cell?.trim()) return [];
   const out: { domain: string; dr: number }[] = [];
-  // Split on ; (preferred) or | (fallback) or newline
   const parts = cell.split(/\s*[;|\n]\s*/).filter(Boolean);
   for (const p of parts) {
-    // Match: "domain.com (DR 92)" or "domain.com DR 92" or "domain.com 92"
-    const m = p.match(/^([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*[\s(]*(?:dr\s*)?(\d{1,3})\)?/i);
-    if (m) {
-      out.push({
-        domain: m[1].toLowerCase().trim(),
-        dr: Math.max(0, Math.min(100, parseInt(m[2], 10))),
-      });
-    }
+    // Domain: prefer the bracketed form `[domain]` (markdown link), else bare token at start.
+    const domainMatch =
+      p.match(/\[([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\]/i) ??
+      p.match(/^([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
+    if (!domainMatch) continue;
+    // DR: explicit "DR NN" wins; else first standalone 1-3 digit number (likely inside parens).
+    const drMatch = p.match(/dr\s*(\d{1,3})/i) ?? p.match(/\b(\d{1,3})\b(?!\.)/);
+    if (!drMatch) continue;
+    out.push({
+      domain: domainMatch[1].toLowerCase().trim(),
+      dr: Math.max(0, Math.min(100, parseInt(drMatch[1], 10))),
+    });
   }
   return out;
 }

@@ -937,7 +937,7 @@ export default function DomainPickerPage() {
         <div className="rounded-xl border bg-card p-5 shadow-sm space-y-5">
           <div>
             <h3 className="text-sm font-semibold mb-3">Preset lọc</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {(Object.keys(THRESHOLD_PRESETS) as Array<keyof typeof THRESHOLD_PRESETS>).map((name) => {
                 const active = presetName === name;
                 const p = THRESHOLD_PRESETS[name];
@@ -958,7 +958,9 @@ export default function DomainPickerPage() {
                       {active && <Check className="h-4 w-4 text-primary" />}
                     </div>
                     <p className="text-[11px] text-muted-foreground font-mono leading-snug">
-                      TF≥{p.tfMin} · CF≥{p.cfMin} · RD≥{p.rdMin} · DA≥{p.daMin} · Age≥{p.ageMin} · SZ≥{p.szScoreMin} · Drops≤{p.szDropsMax}
+                      {name === "none"
+                        ? "Hiển thị tất cả domain — bỏ qua mọi ngưỡng"
+                        : `TF≥${p.tfMin} · CF≥${p.cfMin} · RD≥${p.rdMin} · DA≥${p.daMin} · Age≥${p.ageMin} · SZ≥${p.szScoreMin} · Drops≤${p.szDropsMax}`}
                     </p>
                   </button>
                 );
