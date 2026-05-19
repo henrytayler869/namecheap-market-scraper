@@ -1031,6 +1031,28 @@ export default function DomainPickerPage() {
               <span className="text-sm font-medium">
                 Top picks: {displayedRows.length.toLocaleString()} / {qualifiedRows.length.toLocaleString()} qualified
               </span>
+              {topN > 0 && qualifiedRows.length > topN && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => dispatchWizard({ type: "setTopN", topN: 0 })}
+                  className="h-6 px-2 text-xs text-primary hover:text-primary"
+                  title={`Đang giới hạn Top ${topN}. Click để hiện toàn bộ ${qualifiedRows.length.toLocaleString()} domain.`}
+                >
+                  Hiện tất cả ({qualifiedRows.length.toLocaleString()})
+                </Button>
+              )}
+              {topN === 0 && qualifiedRows.length > 50 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => dispatchWizard({ type: "setTopN", topN: 50 })}
+                  className="h-6 px-2 text-xs text-muted-foreground"
+                  title="Quay lại chỉ hiện top 50 (theo score)"
+                >
+                  Chỉ top 50
+                </Button>
+              )}
               {excludeChecked && excludedCount > 0 && (
                 <Badge
                   variant="secondary"
